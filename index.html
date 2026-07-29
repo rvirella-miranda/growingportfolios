@@ -1,7 +1,1200 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta charset="UTF-8"><!DOCTYPE html>
+<html lang="en">
+<head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Growing Portfolios — Classroom Stock Exchange</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --cream: #f2efe3;
+    --paper: #fbf9f1;
+    --paper-2: #f6f3e6;
+    --ink: #4a4536;
+    --ink-soft: #77705c;
+    --sage: #8a9a6e;
+    --sage-dark: #6b7a58;
+    --sage-pale: #e3e8d7;
+    --clay: #b57b5a;
+    --clay-pale: #efd9c9;
+    --line: #dbd6c1;
+    --red: #a85c4d;
+    --gold: #c9a45c;
+    --shadow: 0 2px 10px rgba(90, 82, 55, 0.08), 0 1px 2px rgba(90,82,55,0.06);
+  }
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    font-family: 'Nunito', sans-serif;
+    background: var(--cream);
+    background-image:
+      radial-gradient(circle at 8% 12%, rgba(138,154,110,0.07) 0, transparent 45%),
+      radial-gradient(circle at 92% 85%, rgba(181,123,90,0.07) 0, transparent 45%);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+  h1,h2,h3,h4{ font-family:'Kalam', cursive; font-weight:700; color: var(--ink); margin: 0 0 6px 0; }
+  .eyebrow{ font-family:'Kalam', cursive; color: var(--sage-dark); letter-spacing:0.5px; font-size:0.85rem; }
+  a{ color: var(--sage-dark); }
+
+  #app{ max-width: 1180px; margin: 0 auto; padding: 22px 18px 60px; }
+
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+    background: var(--paper);
+    border: 1.5px solid var(--line);
+    border-radius: 18px;
+    padding: 14px 22px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+  }
+  .brand{ display:flex; align-items:center; gap:10px; }
+  .brand-title{ font-family:'Kalam',cursive; font-size:1.5rem; }
+  .brand-sub{ font-size:0.8rem; color:var(--ink-soft); margin-top:-4px; }
+  .who{ display:flex; align-items:center; gap:12px; font-size:0.95rem; }
+  .who .name{ font-weight:800; color: var(--sage-dark); }
+
+  .tabs{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+  .tab-btn{
+    font-family:'Kalam',cursive; font-size:1.02rem;
+    background: var(--paper-2); border: 1.5px dashed var(--line); color: var(--ink-soft);
+    padding: 9px 18px; border-radius: 999px; cursor:pointer; transition: all .15s ease;
+  }
+  .tab-btn:hover{ background: var(--sage-pale); color: var(--sage-dark); }
+  .tab-btn.active{ background: var(--sage); border-style: solid; border-color: var(--sage-dark); color: #fffef8; box-shadow: var(--shadow); }
+
+  .grid{ display:grid; gap:18px; }
+  .grid-2{ grid-template-columns: 1fr 1fr; }
+  .grid-3{ grid-template-columns: repeat(3, 1fr); }
+  .grid-4{ grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 860px){ .grid-2, .grid-3, .grid-4{ grid-template-columns: 1fr; } }
+
+  .card{
+    background: var(--paper);
+    border: 1.5px solid var(--line);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .card.dashed{ border-style: dashed; }
+  .card h3{ display:flex; align-items:center; gap:8px; font-size:1.15rem; }
+  .card .sticker{ position:absolute; top:14px; right:16px; font-size:1.1rem; opacity:0.55; }
+
+  .stat-card{ text-align:left; }
+  .stat-card .label{ font-size:0.78rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.6px; font-weight:700;}
+  .stat-card .value{ font-family:'Kalam',cursive; font-size:1.7rem; margin-top:2px; }
+  .stat-card .value.pos{ color: var(--sage-dark); }
+  .stat-card .value.neg{ color: var(--red); }
+
+  label{ display:block; font-size:0.82rem; font-weight:700; color: var(--ink-soft); margin: 10px 0 4px; }
+  input[type=text], input[type=number], input[type=date], input[type=password], select{
+    width:100%; padding:9px 11px; border-radius:10px; border:1.5px solid var(--line);
+    background:#fffef9; font-family:'Nunito',sans-serif; font-size:0.95rem; color:var(--ink);
+  }
+  input:focus, select:focus{ outline:none; border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-pale); }
+  .field-row{ display:grid; grid-template-columns: 1fr 1fr; gap:0 14px; }
+  @media (max-width:600px){ .field-row{ grid-template-columns: 1fr; } }
+
+  button.btn{
+    font-family:'Kalam',cursive; font-size:1rem; cursor:pointer; border-radius:999px; padding:10px 20px;
+    border: 1.5px solid var(--sage-dark); background: var(--sage); color:#fffef8; transition: transform .1s ease, box-shadow .1s ease;
+  }
+  button.btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow); }
+  button.btn.ghost{ background: transparent; color: var(--sage-dark); }
+  button.btn.danger{ background: var(--red); border-color:#8a4335; }
+  button.btn.clay{ background: var(--clay); border-color:#8f5c3f; }
+  button.btn.small{ font-size:0.85rem; padding:6px 14px; }
+  button.btn:disabled{ opacity:0.5; cursor:not-allowed; transform:none; }
+
+  table{ width:100%; border-collapse: collapse; font-size:0.9rem; }
+  th,td{ text-align:left; padding:8px 10px; border-bottom: 1px solid var(--line); }
+  th{ color: var(--ink-soft); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.4px; }
+  tr:last-child td{ border-bottom:none; }
+  .pill{ display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.75rem; font-weight:800; }
+  .pill.buy{ background: var(--sage-pale); color: var(--sage-dark); }
+  .pill.sell{ background: var(--clay-pale); color:#8f5c3f; }
+  .pill.upd{ background:#e6e1f0; color:#6a5c9e; }
+
+  .chart-wrap{ position:relative; width:100%; }
+  .chart-wrap canvas{ width:100% !important; }
+
+  .login-wrap{ display:flex; justify-content:center; align-items:center; min-height: 80vh; }
+  .login-cards{ display:grid; grid-template-columns:1fr 1fr; gap:24px; max-width: 820px; width:100%; }
+  @media (max-width:700px){ .login-cards{ grid-template-columns:1fr; } }
+  .hero-title{ text-align:center; margin-bottom: 26px; }
+  .hero-title h1{ font-size:2.1rem; }
+  .hero-title .sub{ color: var(--ink-soft); font-size:1rem; }
+
+  .muted{ color: var(--ink-soft); font-size:0.88rem; }
+  .error-inline{ color: var(--red); font-size:0.85rem; margin-top:6px; }
+  .divider{ border:none; border-top:1.5px dashed var(--line); margin: 16px 0; }
+  details summary{ cursor:pointer; font-weight:700; color: var(--sage-dark); }
+  details{ margin-top:4px; }
+  .empty-note{ text-align:center; padding: 30px 10px; color: var(--ink-soft); }
+  .flex-between{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;}
+  .small-note{ font-size:0.78rem; color:var(--ink-soft); margin-top:4px; }
+
+  #toast{
+    position: fixed; left:50%; bottom: 26px; transform: translate(-50%, 20px);
+    background: var(--ink); color:#fffef6; padding: 11px 20px; border-radius: 12px;
+    font-family:'Nunito'; font-weight:700; font-size:0.92rem; opacity:0; pointer-events:none;
+    transition: all .25s ease; box-shadow: var(--shadow); z-index: 999; max-width:90vw; text-align:center;
+  }
+  #toast.show{ opacity:1; transform: translate(-50%, 0); }
+  #toast.error{ background: var(--red); }
+  #toast.success{ background: var(--sage-dark); }
+
+  .stock-card-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap:16px; }
+  .status-open{ color: var(--sage-dark); font-weight:800; }
+  .status-closed{ color: var(--ink-soft); font-weight:800; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* =====================================================================
+   FIREBASE SETUP — REQUIRED BEFORE THIS APP WILL WORK
+   =====================================================================
+   This app stores all student data (roster, PINs, trades, grades) in a
+   free Firebase Firestore database, since it's being self-hosted outside
+   Claude and students won't have Claude accounts to use Claude's own
+   storage. You (the teacher) need to create your own free Firebase
+   project and paste its config below. See the setup guide provided
+   alongside this file for exact click-by-click steps — it takes about
+   5 minutes and costs nothing for a class-sized amount of data.
+   ===================================================================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyBTh0sc2wYzI8hKh16bK4xtce_OHef8X5E",
+  authDomain: "growing-portfolios.firebaseapp.com",
+  projectId: "growing-portfolios",
+  storageBucket: "growing-portfolios.firebasestorage.app",
+  messagingSenderId: "894422763276",
+  appId: "1:894422763276:web:c57a222cf9d72f2413ab29"
+};
+const FIRESTORE_COLLECTION = 'growingPortfolios';
+
+let db = null;
+let firebaseReady = false;
+try{
+  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY'){
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+  }
+}catch(e){
+  console.error('Firebase init failed', e);
+  firebaseReady = false;
+}
+
+/* ---------- Storage helpers (Firestore-backed) ---------- */
+async function loadShared(key, fallback){
+  if(!firebaseReady) return fallback;
+  try{
+    const doc = await db.collection(FIRESTORE_COLLECTION).doc(key).get();
+    if(!doc.exists) return fallback;
+    const data = doc.data();
+    return (data && data.value !== undefined) ? JSON.parse(data.value) : fallback;
+  }catch(e){ console.error('load failed', key, e); return fallback; }
+}
+async function saveShared(key, value){
+  if(!firebaseReady) return;
+  try{
+    await db.collection(FIRESTORE_COLLECTION).doc(key).set({ value: JSON.stringify(value), updatedAt: Date.now() });
+  }catch(e){ console.error('save failed', key, e); }
+}
+async function deleteShared(key){
+  if(!firebaseReady) return;
+  try{ await db.collection(FIRESTORE_COLLECTION).doc(key).delete(); }catch(e){ console.error('delete failed', key, e); }
+}
+
+/* ---------- Utilities ---------- */
+function uid(){ return Math.random().toString(36).slice(2,9) + Date.now().toString(36); }
+function slugify(s){ return s.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'student'; }
+function genPin(){ return '' + Math.floor(1000 + Math.random()*9000); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function money(n){ const v = Number(n)||0; const sign = v<0 ? '-' : ''; return sign + '$' + Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function pct(n){ const v = Number(n)||0; return (v>=0?'+':'') + v.toFixed(2) + '%'; }
+function addDays(dateStr, n){ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+
+function showToast(msg, type){
+  let t = document.getElementById('toast');
+  if(!t){ t = document.createElement('div'); t.id='toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.className = 'toast show ' + (type==='success' ? 'success' : 'error');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(()=>{ t.className = 'toast'; }, 3200);
+}
+
+/* ---------- State ---------- */
+let state = {
+  view: 'login', // login | student | teacher
+  roster: [],
+  teacherPinValue: null,
+  currentStudent: null, // {id, name}
+  studentData: null,
+  studentTab: 'overview',
+  teacherTab: 'roster',
+  allStudentData: {},
+  gradePeriods: [],
+  grades: {},
+  teacherSetupMode: false,
+  settings: { startingCash: 10000, feePercent: 1, studentsCanEdit: false },
+  leaderboardSort: 'total',
+  editingTxId: null,
+  editingContext: null,
+  teacherSelectedStudentId: null,
+  teacherStudentData: null
+};
+
+function freshStudentData(){
+  const start = state.settings.startingCash;
+  return {
+    startingCash: start,
+    createdDate: todayStr(),
+    cash: start,
+    holdings: {},
+    transactions: [],
+    priceHistory: {},
+    portfolioHistory: [{date: todayStr(), cash: start, holdingsValue: 0, total: start}]
+  };
+}
+
+/* Recompute cash, holdings, priceHistory, and portfolioHistory entirely from the
+   transaction log. This makes every transaction the single source of truth, so
+   editing or deleting a past entry safely recalculates everything downstream. */
+function recomputeStudent(sd){
+  const start = (sd.startingCash != null) ? sd.startingCash : state.settings.startingCash;
+  const startDate = sd.createdDate || (sd.transactions.length ? sd.transactions[0].date : todayStr());
+  const txs = sd.transactions.slice().sort((a,b)=>{
+    if(a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return (a.createdAt||0) - (b.createdAt||0);
+  });
+  let cash = start;
+  const holdings = {};
+  const priceHistory = {};
+  const portfolioHistory = [{date: startDate, cash: start, holdingsValue: 0, total: start}];
+  txs.forEach(tx=>{
+    if(tx.type === 'buy'){
+      const cost = tx.price*tx.shares;
+      cash -= cost;
+      if(holdings[tx.ticker]){
+        const totalShares = holdings[tx.ticker].shares + tx.shares;
+        holdings[tx.ticker].avgCost = (holdings[tx.ticker].avgCost*holdings[tx.ticker].shares + cost) / totalShares;
+        holdings[tx.ticker].shares = totalShares;
+        holdings[tx.ticker].currentPrice = tx.price;
+        if(tx.name) holdings[tx.ticker].name = tx.name;
+      } else {
+        holdings[tx.ticker] = {name: tx.name, shares: tx.shares, avgCost: tx.price, currentPrice: tx.price};
+      }
+      tx.total = cost; tx.fee = 0;
+      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
+      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+    } else if(tx.type === 'sell'){
+      const gross = tx.price*tx.shares;
+      const fee = (tx.fee != null && !isNaN(tx.fee)) ? tx.fee : gross*(state.settings.feePercent/100);
+      const net = gross - fee;
+      cash += net;
+      if(holdings[tx.ticker]){
+        holdings[tx.ticker].shares -= tx.shares;
+        holdings[tx.ticker].currentPrice = tx.price;
+        if(holdings[tx.ticker].shares <= 0.0001) delete holdings[tx.ticker];
+      }
+      tx.fee = fee; tx.total = net;
+      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
+      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+    } else if(tx.type === 'priceUpdate'){
+      if(holdings[tx.ticker]) holdings[tx.ticker].currentPrice = tx.price;
+      tx.total = 0; tx.fee = 0;
+      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
+      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+    }
+    const hv = holdingsValue(holdings);
+    portfolioHistory.push({date: tx.date, cash, holdingsValue: hv, total: cash+hv});
+  });
+  sd.transactions = txs;
+  sd.cash = cash;
+  sd.holdings = holdings;
+  sd.priceHistory = priceHistory;
+  sd.portfolioHistory = portfolioHistory;
+}
+
+function applyTxEdit(sd, txId, fields){
+  const tx = sd.transactions.find(t=>t.id===txId);
+  if(!tx) return;
+  Object.assign(tx, fields);
+  recomputeStudent(sd);
+}
+function applyTxDelete(sd, txId){
+  sd.transactions = sd.transactions.filter(t=>t.id!==txId);
+  recomputeStudent(sd);
+}
+
+/* ---------- Init ---------- */
+function buildSetupNotice(){
+  return (
+    '<div class="login-wrap"><div style="max-width:640px;margin:0 auto;">' +
+    '<div class="card dashed">' +
+      '<div class="sticker">🔧</div>' +
+      '<h1>🌿 Almost there — one setup step left</h1>' +
+      '<p class="muted">This app stores student data in a free Firebase database instead of a Claude account, since students won\'t be logging into Claude. Before it will work, paste your Firebase project\'s config into the <code>firebaseConfig</code> object near the top of this file\'s &lt;script&gt; section, replacing the placeholder values.</p>' +
+      '<p class="muted">See the setup guide that came with this file for exact steps (it takes about 5 minutes, no cost). Once the config is filled in and this file is re-saved and reloaded, this message will disappear and the app will load normally.</p>' +
+    '</div>' +
+    '</div></div>'
+  );
+}
+
+async function init(){
+  if(!firebaseReady){
+    document.getElementById('app').innerHTML = buildSetupNotice();
+    return;
+  }
+  const [roster, teacherPinValue, settings, gradePeriods, grades] = await Promise.all([
+    loadShared('roster', []),
+    loadShared('teacherPin', null),
+    loadShared('settings', { startingCash: 10000, feePercent: 1, studentsCanEdit: false }),
+    loadShared('gradePeriods', []),
+    loadShared('grades', {})
+  ]);
+  state.roster = roster;
+  state.teacherPinValue = teacherPinValue;
+  state.settings = settings;
+  state.gradePeriods = gradePeriods;
+  state.grades = grades;
+  render();
+}
+window.addEventListener('DOMContentLoaded', init);
+
+/* ---------- Auth ---------- */
+async function studentLogin(){
+  const id = val('loginStudentSelect');
+  const pin = val('loginStudentPin').trim();
+  const entry = state.roster.find(s=>s.id===id);
+  if(!entry){ showToast('Please choose your name from the list.'); return; }
+  if(entry.pin !== pin){ showToast('That PIN doesn\'t match. Try again.'); return; }
+  let data = await loadShared('student:'+id, null);
+  if(!data){ data = freshStudentData(); await saveShared('student:'+id, data); }
+  state.currentStudent = {id, name: entry.name};
+  state.studentData = data;
+  state.studentTab = 'overview';
+  state.view = 'student';
+  render();
+}
+
+async function teacherSetup(){
+  const p1 = val('teacherPinNew').trim();
+  const p2 = val('teacherPinConfirm').trim();
+  if(p1.length < 4){ showToast('Choose a PIN with at least 4 characters.'); return; }
+  if(p1 !== p2){ showToast('PINs do not match.'); return; }
+  state.teacherPinValue = p1;
+  await saveShared('teacherPin', p1);
+  state.view = 'teacher'; state.teacherTab = 'roster';
+  render();
+}
+
+function teacherLogin(){
+  const p = val('teacherPinInput').trim();
+  if(p !== state.teacherPinValue){ showToast('Incorrect teacher PIN.'); return; }
+  state.view = 'teacher'; state.teacherTab = 'roster';
+  render();
+}
+
+function logout(){
+  state.currentStudent = null; state.studentData = null; state.view = 'login';
+  render();
+}
+
+/* ---------- Settings (teacher) ---------- */
+async function saveSettings(){
+  const cash = parseFloat(val('settingStartingCash'));
+  const fee = parseFloat(val('settingFeePercent'));
+  const studentsCanEdit = document.getElementById('settingStudentsCanEdit') ? document.getElementById('settingStudentsCanEdit').checked : false;
+  if(!(cash>0)){ showToast('Enter a starting cash amount greater than 0.'); return; }
+  if(!(fee>=0)){ showToast('Enter a fee percentage of 0 or more.'); return; }
+  state.settings = { startingCash: cash, feePercent: fee, studentsCanEdit };
+  await saveShared('settings', state.settings);
+  showToast('Settings saved. New students will start with ' + money(cash) + ' and sells will charge a ' + fee + '% fee.', 'success');
+  render();
+}
+
+/* ---------- Roster (teacher) ---------- */
+async function addStudent(){
+  const name = val('newStudentName').trim();
+  let pin = val('newStudentPin').trim();
+  if(!name){ showToast('Enter a student name.'); return; }
+  if(!pin){ pin = genPin(); }
+  const id = slugify(name) + '-' + Math.random().toString(36).slice(2,6);
+  state.roster.push({id, name, pin});
+  await saveShared('roster', state.roster);
+  showToast('Added ' + name + ' to the roster.', 'success');
+  render();
+}
+
+async function removeStudent(id){
+  const entry = state.roster.find(s=>s.id===id);
+  if(!entry) return;
+  if(!confirm('Remove ' + entry.name + ' from the roster? Their trading history will be deleted.')) return;
+  state.roster = state.roster.filter(s=>s.id!==id);
+  await saveShared('roster', state.roster);
+  await deleteShared('student:'+id);
+  delete state.grades[id];
+  await saveShared('grades', state.grades);
+  delete state.allStudentData[id];
+  showToast('Removed ' + entry.name + '.', 'success');
+  render();
+}
+
+/* ---------- Trading (student) ---------- */
+function holdingsValue(holdings){
+  return Object.values(holdings).reduce((sum,h)=> sum + h.shares*h.currentPrice, 0);
+}
+async function saveStudent(){
+  await saveShared('student:' + state.currentStudent.id, state.studentData);
+}
+
+async function buyStock(){
+  const name = val('buyName').trim();
+  const ticker = val('buyTicker').trim().toUpperCase();
+  const price = parseFloat(val('buyPrice'));
+  const shares = parseFloat(val('buyShares'));
+  const date = val('buyDate') || todayStr();
+  if(!name || !ticker || !(price>0) || !(shares>0)){ showToast('Fill in stock name, ticker, price, and shares with valid values.'); return; }
+  const cost = price*shares;
+  if(cost > state.studentData.cash + 0.001){ showToast('Not enough cash — this purchase costs ' + money(cost) + ' but you have ' + money(state.studentData.cash) + '.'); return; }
+  state.studentData.transactions.push({id: uid(), date, type:'buy', ticker, name, shares, price, fee:0, total: cost, createdAt: Date.now()});
+  recomputeStudent(state.studentData);
+  await saveStudent();
+  showToast('Bought ' + shares + ' shares of ' + ticker + ' for ' + money(cost) + '.', 'success');
+  render();
+}
+
+async function sellStock(){
+  const ticker = val('sellTicker');
+  const price = parseFloat(val('sellPrice'));
+  const shares = parseFloat(val('sellShares'));
+  const date = val('sellDate') || todayStr();
+  const h = state.studentData.holdings[ticker];
+  if(!h || !(price>0) || !(shares>0)){ showToast('Choose a stock you own and enter a valid price and share count.'); return; }
+  if(shares > h.shares + 0.0001){ showToast('You only own ' + h.shares + ' shares of ' + ticker + '.'); return; }
+  const name = h.name;
+  const gross = price*shares;
+  const fee = gross*(state.settings.feePercent/100);
+  const net = gross - fee;
+  state.studentData.transactions.push({id: uid(), date, type:'sell', ticker, name, shares, price, fee, total: net, createdAt: Date.now()});
+  recomputeStudent(state.studentData);
+  await saveStudent();
+  showToast('Sold ' + shares + ' shares of ' + ticker + ' for ' + money(net) + ' (after ' + money(fee) + ' fee).', 'success');
+  render();
+}
+
+async function updateStockPrice(){
+  const ticker = val('updTicker');
+  const price = parseFloat(val('updPrice'));
+  const date = val('updDate') || todayStr();
+  const h = state.studentData.holdings[ticker];
+  if(!h || !(price>0)){ showToast('Choose a stock you hold and enter a valid new price.'); return; }
+  state.studentData.transactions.push({id: uid(), date, type:'priceUpdate', ticker, name: h.name, shares:0, price, fee:0, total:0, createdAt: Date.now()});
+  recomputeStudent(state.studentData);
+  await saveStudent();
+  showToast('Updated ' + ticker + ' to ' + money(price) + '.', 'success');
+  render();
+}
+
+/* ---------- Editing / deleting past entries ---------- */
+function pillClass(type){ return type==='buy'?'buy':(type==='sell'?'sell':'upd'); }
+function pillLabel(type){ return type==='buy'?'BUY':(type==='sell'?'SELL':'PRICE UPDATE'); }
+
+function getTargetData(context){ return context==='teacher' ? state.teacherStudentData : state.studentData; }
+async function saveTargetData(context){
+  if(context==='teacher'){
+    await saveShared('student:'+state.teacherSelectedStudentId, state.teacherStudentData);
+    state.allStudentData[state.teacherSelectedStudentId] = state.teacherStudentData;
+  } else {
+    await saveStudent();
+  }
+}
+
+function startEditTx(context, txId){
+  state.editingTxId = txId; state.editingContext = context; render();
+}
+function cancelEditTx(){
+  state.editingTxId = null; state.editingContext = null; render();
+}
+async function saveEditTx(context, txId){
+  const sd = getTargetData(context);
+  const tx = sd.transactions.find(t=>t.id===txId);
+  if(!tx) return;
+  const date = val('editDate-'+txId) || tx.date;
+  const ticker = (val('editTicker-'+txId)||'').trim().toUpperCase();
+  const name = (val('editName-'+txId)||'').trim();
+  const price = parseFloat(val('editPrice-'+txId));
+  if(!ticker || !(price>0)){ showToast('Enter a valid ticker and price.'); return; }
+  const fields = { date, ticker, name: name || ticker, price };
+  if(tx.type !== 'priceUpdate'){
+    const shares = parseFloat(val('editShares-'+txId));
+    if(!(shares>0)){ showToast('Enter a valid share amount.'); return; }
+    fields.shares = shares;
+  }
+  if(tx.type === 'sell'){
+    const fee = parseFloat(val('editFee-'+txId));
+    fields.fee = (!isNaN(fee) && fee>=0) ? fee : tx.fee;
+  }
+  applyTxEdit(sd, txId, fields);
+  await saveTargetData(context);
+  state.editingTxId = null; state.editingContext = null;
+  showToast('Entry updated — totals recalculated.', 'success');
+  render();
+}
+async function deleteTx(context, txId){
+  if(!confirm('Delete this entry? Cash, holdings, and charts will be recalculated.')) return;
+  const sd = getTargetData(context);
+  applyTxDelete(sd, txId);
+  await saveTargetData(context);
+  showToast('Entry deleted — totals recalculated.', 'success');
+  render();
+}
+
+function buildHistoryTable(sd, context, canEdit){
+  const txs = sd.transactions.slice().sort((a,b)=>{
+    if(a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (b.createdAt||0) - (a.createdAt||0);
+  });
+  if(!txs.length) return '<div class="empty-note">No activity logged yet.</div>';
+  const rows = txs.map(tx=>{
+    if(canEdit && state.editingTxId===tx.id && state.editingContext===context){
+      const sharesField = tx.type!=='priceUpdate' ? ('<input type="number" id="editShares-'+tx.id+'" value="'+tx.shares+'" step="any" style="width:70px;">') : '—';
+      const feeField = tx.type==='sell' ? ('<input type="number" id="editFee-'+tx.id+'" value="'+tx.fee+'" step="0.01" style="width:80px;">') : '—';
+      return '<tr>'+
+        '<td><input type="date" id="editDate-'+tx.id+'" value="'+tx.date+'" style="width:135px;"></td>'+
+        '<td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+        '<td><input type="text" id="editTicker-'+tx.id+'" value="'+esc(tx.ticker)+'" style="width:65px;text-transform:uppercase;"></td>'+
+        '<td><input type="text" id="editName-'+tx.id+'" value="'+esc(tx.name)+'" style="width:120px;"></td>'+
+        '<td>'+sharesField+'</td>'+
+        '<td><input type="number" id="editPrice-'+tx.id+'" value="'+tx.price+'" step="0.01" style="width:80px;"></td>'+
+        '<td>'+feeField+'</td>'+
+        '<td>'+money(tx.total)+'</td>'+
+        '<td style="white-space:nowrap;"><button class="btn small" onclick="saveEditTx(\''+context+'\',\''+tx.id+'\')">Save</button> '+
+            '<button class="btn ghost small" onclick="cancelEditTx()">Cancel</button></td>'+
+      '</tr>';
+    }
+    return '<tr><td>'+tx.date+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+      '<td><strong>'+esc(tx.ticker)+'</strong></td><td>'+esc(tx.name)+'</td>'+
+      '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td>'+
+      (canEdit ? ('<td style="white-space:nowrap;"><button class="btn ghost small" onclick="startEditTx(\''+context+'\',\''+tx.id+'\')">Edit</button> '+
+                 '<button class="btn danger small" onclick="deleteTx(\''+context+'\',\''+tx.id+'\')">Delete</button></td>') : '<td></td>') +
+    '</tr>';
+  }).join('');
+  return '<table><thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th>Name</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+
+
+/* ---------- Grading (teacher) ---------- */
+async function addGradePeriod(){
+  const label = val('periodLabel').trim() || ('Period ' + (state.gradePeriods.length+1));
+  const start = val('periodStart') || todayStr();
+  const end = val('periodEnd') || addDays(start, 13);
+  state.gradePeriods.push({id: uid(), label, start, end});
+  await saveShared('gradePeriods', state.gradePeriods);
+  render();
+}
+async function removeGradePeriod(id){
+  if(!confirm('Delete this grading period and its saved grades?')) return;
+  state.gradePeriods = state.gradePeriods.filter(p=>p.id!==id);
+  Object.keys(state.grades).forEach(sid=>{ if(state.grades[sid]) delete state.grades[sid][id]; });
+  await saveShared('gradePeriods', state.gradePeriods);
+  await saveShared('grades', state.grades);
+  render();
+}
+async function saveGrade(studentId, periodId){
+  const grade = val('grade-'+studentId+'-'+periodId).trim();
+  const note = val('note-'+studentId+'-'+periodId).trim();
+  if(!state.grades[studentId]) state.grades[studentId] = {};
+  state.grades[studentId][periodId] = {grade, note, savedOn: todayStr()};
+  await saveShared('grades', state.grades);
+  showToast('Saved grade for ' + (state.roster.find(s=>s.id===studentId)||{}).name + '.', 'success');
+  render();
+}
+
+async function loadAllStudentData(){
+  const results = await Promise.all(state.roster.map(s => loadShared('student:'+s.id, null)));
+  state.roster.forEach((s, i)=>{
+    state.allStudentData[s.id] = results[i] || freshStudentData();
+  });
+}
+
+async function teacherSelectStudent(id){
+  state.teacherSelectedStudentId = id || null;
+  state.editingTxId = null; state.editingContext = null;
+  if(id){
+    state.teacherStudentData = await loadShared('student:'+id, null) || freshStudentData();
+  } else {
+    state.teacherStudentData = null;
+  }
+  render();
+}
+
+/* ---------- Tab navigation ---------- */
+function goStudentTab(tab){
+  state.studentTab = tab;
+  state.editingTxId = null; state.editingContext = null;
+  if(tab === 'class' || tab === 'leaderboard'){ loadAllStudentData().then(render); }
+  else if(tab === 'trade'){ loadShared('settings', state.settings).then(s=>{ state.settings = s; render(); }); }
+  else render();
+}
+function goTeacherTab(tab){
+  state.teacherTab = tab;
+  state.editingTxId = null; state.editingContext = null;
+  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard'){ loadAllStudentData().then(render); }
+  else render();
+}
+function setLeaderboardSort(mode){
+  state.leaderboardSort = mode;
+  render();
+}
+
+/* ---------- Rendering ---------- */
+function render(){
+  const app = document.getElementById('app');
+  if(state.view === 'login') app.innerHTML = buildLogin();
+  else if(state.view === 'student') app.innerHTML = buildStudentApp();
+  else if(state.view === 'teacher') app.innerHTML = buildTeacherApp();
+  postRender();
+}
+
+function buildLogin(){
+  const hasRoster = state.roster.length > 0;
+  const studentOptions = state.roster.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join('');
+  const teacherPanel = state.teacherPinValue ? (
+    '<label>Teacher PIN</label>' +
+    '<input type="password" id="teacherPinInput" placeholder="Enter your PIN">' +
+    '<button class="btn clay" style="margin-top:14px;width:100%" onclick="teacherLogin()">Log in as teacher ✎</button>'
+  ) : (
+    '<p class="muted">First time here — set up your teacher PIN.</p>' +
+    '<label>Create a PIN</label><input type="password" id="teacherPinNew" placeholder="At least 4 characters">' +
+    '<label>Confirm PIN</label><input type="password" id="teacherPinConfirm" placeholder="Retype your PIN">' +
+    '<button class="btn clay" style="margin-top:14px;width:100%" onclick="teacherSetup()">Create teacher account</button>'
+  );
+  return (
+    '<div class="login-wrap"><div style="width:100%">' +
+    '<div class="hero-title"><h1>🌿 Growing Portfolios</h1><div class="sub">Our classroom stock market — start small, grow steady.</div></div>' +
+    '<div class="login-cards">' +
+      '<div class="card">' +
+        '<div class="sticker">📓</div>' +
+        '<h3>I\'m a Student</h3>' +
+        (hasRoster ? (
+          '<label>Your name</label><select id="loginStudentSelect">'+studentOptions+'</select>' +
+          '<label>Your PIN</label><input type="password" id="loginStudentPin" placeholder="Enter your PIN">' +
+          '<button class="btn" style="margin-top:14px;width:100%" onclick="studentLogin()">Log in 📈</button>'
+        ) : '<p class="muted">Your teacher hasn\'t added you to the roster yet. Ask them to add your name first!</p>') +
+      '</div>' +
+      '<div class="card dashed">' +
+        '<div class="sticker">🗝️</div>' +
+        '<h3>I\'m the Teacher</h3>' +
+        teacherPanel +
+      '</div>' +
+    '</div>' +
+    '</div></div>'
+  );
+}
+
+function tabBtn(key, activeKey, label, onclick){
+  return '<button class="tab-btn'+(key===activeKey?' active':'')+'" onclick="'+onclick+'">'+label+'</button>';
+}
+
+function buildStudentApp(){
+  const t = state.studentTab;
+  let body = '';
+  if(t==='overview') body = buildOverview();
+  else if(t==='trade') body = buildTrade();
+  else if(t==='update') body = buildUpdatePrices();
+  else if(t==='mystocks') body = buildMyStocks();
+  else if(t==='history') body = buildStudentHistory();
+  else if(t==='class') body = buildClassPerformance(false);
+  else if(t==='leaderboard') body = buildLeaderboard();
+
+  return (
+    '<div class="topbar">' +
+      '<div class="brand"><div><div class="brand-title">🌿 Growing Portfolios</div><div class="brand-sub">Classroom Stock Exchange</div></div></div>' +
+      '<div class="who"><span>Trading as <span class="name">'+esc(state.currentStudent.name)+'</span></span>' +
+      '<button class="btn ghost small" onclick="logout()">Log out</button></div>' +
+    '</div>' +
+    '<div class="tabs">' +
+      tabBtn('overview',t,'📊 Dashboard',"goStudentTab('overview')") +
+      tabBtn('trade',t,'💱 Trade',"goStudentTab('trade')") +
+      tabBtn('update',t,'✏️ Update Prices',"goStudentTab('update')") +
+      tabBtn('mystocks',t,'📈 My Stocks',"goStudentTab('mystocks')") +
+      tabBtn('history',t,'📜 History',"goStudentTab('history')") +
+      tabBtn('class',t,'🏫 Class Performance',"goStudentTab('class')") +
+      tabBtn('leaderboard',t,'🏆 Leaderboard',"goStudentTab('leaderboard')") +
+    '</div>' +
+    body
+  );
+}
+
+function studentBaseline(sd){
+  if(sd.startingCash != null) return sd.startingCash;
+  return (sd.portfolioHistory && sd.portfolioHistory.length) ? sd.portfolioHistory[0].total : state.settings.startingCash;
+}
+
+function buildOverview(){
+  const sd = state.studentData;
+  const hv = holdingsValue(sd.holdings);
+  const total = sd.cash + hv;
+  const base = studentBaseline(sd);
+  const gain = total - base;
+  const gainPct = base ? (gain/base)*100 : 0;
+  const rows = Object.entries(sd.holdings).map(([ticker,h])=>{
+    const mval = h.shares*h.currentPrice;
+    const g = (h.currentPrice - h.avgCost)*h.shares;
+    const gp = h.avgCost>0 ? ((h.currentPrice-h.avgCost)/h.avgCost)*100 : 0;
+    return '<tr><td><strong>'+ticker+'</strong></td><td>'+esc(h.name)+'</td><td>'+h.shares+'</td><td>'+money(h.avgCost)+'</td><td>'+money(h.currentPrice)+'</td><td>'+money(mval)+'</td><td class="'+(g>=0?'status-open':'status-closed')+'">'+money(g)+' ('+pct(gp)+')</td></tr>';
+  }).join('');
+  return (
+    '<div class="grid grid-4" style="margin-bottom:18px;">' +
+      '<div class="card stat-card"><div class="label">Cash on hand</div><div class="value">'+money(sd.cash)+'</div></div>' +
+      '<div class="card stat-card"><div class="label">Holdings value</div><div class="value">'+money(hv)+'</div></div>' +
+      '<div class="card stat-card"><div class="label">Total portfolio</div><div class="value">'+money(total)+'</div></div>' +
+      '<div class="card stat-card"><div class="label">Overall gain / loss</div><div class="value '+(gain>=0?'pos':'neg')+'">'+money(gain)+' ('+pct(gainPct)+')</div></div>' +
+    '</div>' +
+    '<div class="card" style="margin-bottom:18px;">' +
+      '<h3>🌱 Portfolio value over time</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">This line moves when a stock\'s price changes or when you sell (fees apply) — buying at the listed price doesn\'t change your total by itself.</div>' +
+      '<div class="chart-wrap" style="height:320px;"><canvas id="overviewChart"></canvas></div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<h3>📋 Current holdings</h3>' +
+      (rows ? '<table><thead><tr><th>Ticker</th><th>Name</th><th>Shares</th><th>Avg Cost</th><th>Current Price</th><th>Market Value</th><th>Gain / Loss</th></tr></thead><tbody>'+rows+'</tbody></table>'
+            : '<div class="empty-note">You don\'t own any stocks yet. Head to the Trade tab to buy your first stock! 🌿</div>') +
+    '</div>'
+  );
+}
+
+function priceLookupBanner(){
+  return (
+    '<div class="card dashed" style="margin-bottom:18px;padding:14px 20px;">' +
+      '<a href="https://www.tradingview.com/markets/stocks-usa/market-movers-all-stocks/" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;">' +
+        '<span style="font-size:1.3rem;">🔎</span>' +
+        '<span><strong style="color:var(--sage-dark);">Look up real stock prices on TradingView</strong>' +
+        '<div class="small-note">Opens in a new tab — check today\'s prices before you buy, sell, or update. ↗</div></span>' +
+      '</a>' +
+    '</div>'
+  );
+}
+
+function buildTrade(){
+  const sd = state.studentData;
+  const heldTickers = Object.keys(sd.holdings);
+  const sellOptions = heldTickers.map(t=>'<option value="'+t+'">'+t+' — '+esc(sd.holdings[t].name)+' ('+sd.holdings[t].shares+' shares)</option>').join('');
+  const txRows = sd.transactions.slice().sort((a,b)=>{
+    if(a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (b.createdAt||0) - (a.createdAt||0);
+  }).slice(0,12).map(tx=>{
+    const pillClass = tx.type==='buy'?'buy':(tx.type==='sell'?'sell':'upd');
+    const pillLabel = tx.type==='buy'?'BUY':(tx.type==='sell'?'SELL':'PRICE UPDATE');
+    return '<tr><td>'+tx.date+'</td><td><span class="pill '+pillClass+'">'+pillLabel+'</span></td><td><strong>'+tx.ticker+'</strong></td>'+
+      '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td></tr>';
+  }).join('');
+  return (
+    priceLookupBanner() +
+    '<div class="grid grid-2">' +
+      '<div class="card">' +
+        '<div class="sticker">🌿</div>' +
+        '<h3>Buy a stock</h3>' +
+        '<div class="muted">Cash available: <strong>'+money(sd.cash)+'</strong></div>' +
+        '<div class="field-row"><div><label>Stock name</label><input type="text" id="buyName" placeholder="e.g. Nova Robotics"></div>' +
+        '<div><label>Ticker</label><input type="text" id="buyTicker" placeholder="e.g. NOVA" style="text-transform:uppercase"></div></div>' +
+        '<div class="field-row"><div><label>Price per share</label><input type="number" id="buyPrice" min="0.01" step="0.01" placeholder="0.00"></div>' +
+        '<div><label>Shares to buy</label><input type="number" id="buyShares" min="1" step="1" placeholder="0"></div></div>' +
+        '<label>Date</label><input type="date" id="buyDate" value="'+todayStr()+'">' +
+        '<button class="btn" style="margin-top:14px;width:100%" onclick="buyStock()">Buy shares 🌱</button>' +
+      '</div>' +
+      '<div class="card dashed">' +
+        '<div class="sticker">💰</div>' +
+        '<h3>Sell a stock</h3>' +
+        (heldTickers.length ? (
+          '<label>Stock</label><select id="sellTicker">'+sellOptions+'</select>' +
+          '<div class="field-row"><div><label>Price per share</label><input type="number" id="sellPrice" min="0.01" step="0.01" placeholder="0.00"></div>' +
+          '<div><label>Shares to sell</label><input type="number" id="sellShares" min="1" step="1" placeholder="0"></div></div>' +
+          '<label>Date</label><input type="date" id="sellDate" value="'+todayStr()+'">' +
+          '<div class="small-note">A '+state.settings.feePercent+'% fee on the total sale is charged for every sell.</div>' +
+          '<button class="btn danger" style="margin-top:14px;width:100%" onclick="sellStock()">Sell shares 💸</button>'
+        ) : '<div class="empty-note">You don\'t own any stocks to sell yet.</div>') +
+      '</div>' +
+    '</div>' +
+    '<div class="card" style="margin-top:18px;">' +
+      '<h3>🧾 Recent transactions</h3>' +
+      '<div class="small-note" style="margin-bottom:6px;">Need to fix a mistake? Visit the History tab to edit or delete an entry.</div>' +
+      (txRows ? '<table><thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th></tr></thead><tbody>'+txRows+'</tbody></table>'
+              : '<div class="empty-note">No transactions yet.</div>') +
+    '</div>'
+  );
+}
+
+function buildUpdatePrices(){
+  const sd = state.studentData;
+  const heldTickers = Object.keys(sd.holdings);
+  const options = heldTickers.map(t=>'<option value="'+t+'">'+t+' — '+esc(sd.holdings[t].name)+'</option>').join('');
+  const rows = heldTickers.map(t=>{
+    const h = sd.holdings[t];
+    const hist = sd.priceHistory[t]||[];
+    const last = hist.length ? hist[hist.length-1].date : '—';
+    return '<tr><td><strong>'+t+'</strong></td><td>'+esc(h.name)+'</td><td>'+money(h.currentPrice)+'</td><td>'+last+'</td></tr>';
+  }).join('');
+  return (
+    priceLookupBanner() +
+    '<div class="grid grid-2">' +
+      '<div class="card">' +
+        '<div class="sticker">✏️</div>' +
+        '<h3>Update today\'s stock price</h3>' +
+        (heldTickers.length ? (
+          '<label>Stock</label><select id="updTicker">'+options+'</select>' +
+          '<label>New price per share</label><input type="number" id="updPrice" min="0.01" step="0.01" placeholder="0.00">' +
+          '<label>Date</label><input type="date" id="updDate" value="'+todayStr()+'">' +
+          '<button class="btn" style="margin-top:14px;width:100%" onclick="updateStockPrice()">Save price update 🌤️</button>'
+        ) : '<div class="empty-note">Buy a stock first, then come back each day to log its price.</div>') +
+      '</div>' +
+      '<div class="card dashed">' +
+        '<div class="sticker">📅</div>' +
+        '<h3>Your held stocks</h3>' +
+        (rows ? '<table><thead><tr><th>Ticker</th><th>Name</th><th>Current Price</th><th>Last Update</th></tr></thead><tbody>'+rows+'</tbody></table>'
+              : '<div class="empty-note">Nothing to show yet.</div>') +
+        '<div class="small-note">Keep this current — your teacher checks your update history when assigning grades!</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function buildMyStocks(){
+  const sd = state.studentData;
+  const tickers = Object.keys(sd.priceHistory);
+  if(!tickers.length){
+    return '<div class="card"><div class="empty-note">No stocks yet — buy your first one on the Trade tab and its price history will appear here. 📈</div></div>';
+  }
+  const cards = tickers.map(t=>{
+    const isOpen = !!sd.holdings[t];
+    const h = sd.holdings[t];
+    const statusText = isOpen ? (h.shares+' shares open') : 'Position closed';
+    const canvasId = 'stockChart_' + t.replace(/[^a-zA-Z0-9]/g,'');
+    return (
+      '<div class="card">' +
+        '<h4>'+t+' <span class="'+(isOpen?'status-open':'status-closed')+'" style="font-size:0.8rem;">('+statusText+')</span></h4>' +
+        (isOpen ? '<div class="muted">Avg cost '+money(h.avgCost)+' · Current '+money(h.currentPrice)+'</div>' : '') +
+        '<div class="chart-wrap" style="height:180px;margin-top:8px;"><canvas id="'+canvasId+'"></canvas></div>' +
+      '</div>'
+    );
+  }).join('');
+  return '<div class="stock-card-grid">'+cards+'</div>';
+}
+
+function buildStudentHistory(){
+  const sd = state.studentData;
+  const canEdit = !!state.settings.studentsCanEdit;
+  return (
+    '<div class="card">' +
+      '<div class="flex-between"><h3>📜 Your full activity log</h3>' +
+      '<span class="muted">'+sd.transactions.length+' entr'+(sd.transactions.length===1?'y':'ies')+'</span></div>' +
+      (canEdit
+        ? '<div class="small-note">You can fix mistakes here — editing or deleting an entry recalculates your cash, holdings, and charts automatically.</div>'
+        : '<div class="small-note">This is a read-only record. If you spot a mistake, ask your teacher to fix it in the Student Records tab.</div>') +
+      '<div style="overflow-x:auto;margin-top:10px;">' + buildHistoryTable(sd, 'student', canEdit) + '</div>' +
+    '</div>'
+  );
+}
+
+function studentTotals(id){
+  const d = state.allStudentData[id] || freshStudentData();
+  const hv = holdingsValue(d.holdings);
+  const total = d.cash + hv;
+  const base = studentBaseline(d);
+  const gain = total - base;
+  const gainPct = base ? (gain/base)*100 : 0;
+  return {cash:d.cash, holdingsValue:hv, total, gain, gainPct, data:d};
+}
+
+function buildClassPerformance(isTeacher){
+  const rows = state.roster.map(s=>{
+    const stt = studentTotals(s.id);
+    const holdingsRows = Object.entries(stt.data.holdings).map(([ticker,h])=>{
+      const mval = h.shares*h.currentPrice;
+      return '<tr><td>'+ticker+'</td><td>'+esc(h.name)+'</td><td>'+h.shares+'</td><td>'+money(h.avgCost)+'</td><td>'+money(h.currentPrice)+'</td><td>'+money(mval)+'</td></tr>';
+    }).join('');
+    const holdingsTable = Object.keys(stt.data.holdings).length
+      ? '<table style="margin-top:8px;"><thead><tr><th>Ticker</th><th>Name</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th></tr></thead><tbody>'+holdingsRows+'</tbody></table>'
+      : '<div class="muted" style="margin-top:6px;">No open positions.</div>';
+    return (
+      '<tr><td><strong>'+esc(s.name)+'</strong></td><td>'+money(stt.cash)+'</td><td>'+money(stt.holdingsValue)+'</td><td>'+money(stt.total)+'</td>' +
+      '<td class="'+(stt.gain>=0?'status-open':'status-closed')+'">'+money(stt.gain)+' ('+pct(stt.gainPct)+')</td>' +
+      '<td><details><summary>View holdings</summary>'+holdingsTable+'</details></td></tr>'
+    );
+  }).join('');
+  return (
+    '<div class="card" style="margin-bottom:18px;">' +
+      '<h3>🏫 Class portfolio value over time</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">Lines move as students update stock prices or sell — buying alone doesn\'t change a student\'s total.</div>' +
+      '<div class="chart-wrap" style="height:360px;"><canvas id="classChart"></canvas></div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<h3>📊 Class standings</h3>' +
+      (state.roster.length ? '<table><thead><tr><th>Student</th><th>Cash</th><th>Holdings Value</th><th>Total Portfolio</th><th>Gain / Loss</th><th>Details</th></tr></thead><tbody>'+rows+'</tbody></table>'
+        : '<div class="empty-note">No students on the roster yet.</div>') +
+    '</div>'
+  );
+}
+
+function buildLeaderboard(){
+  const sortMode = state.leaderboardSort;
+  const ranked = state.roster.map(s=>{
+    const stt = studentTotals(s.id);
+    return { id: s.id, name: s.name, cash: stt.cash, holdingsValue: stt.holdingsValue, total: stt.total, gain: stt.gain, gainPct: stt.gainPct };
+  }).sort((a,b)=> sortMode==='gain' ? (b.gainPct - a.gainPct) : (b.total - a.total));
+  const medals = ['🥇','🥈','🥉'];
+  const rows = ranked.map((r,i)=>{
+    const medal = medals[i] || ('#'+(i+1));
+    return (
+      '<tr><td style="font-size:1.1rem;">'+medal+'</td><td><strong>'+esc(r.name)+'</strong></td>' +
+      '<td>'+money(r.total)+'</td><td>'+money(r.cash)+'</td><td>'+money(r.holdingsValue)+'</td>' +
+      '<td class="'+(r.gain>=0?'status-open':'status-closed')+'">'+money(r.gain)+' ('+pct(r.gainPct)+')</td></tr>'
+    );
+  }).join('');
+  return (
+    '<div class="card">' +
+      '<div class="flex-between">' +
+        '<h3>🏆 Class Leaderboard</h3>' +
+        '<div>' +
+          '<button class="tab-btn'+(sortMode==='total'?' active':'')+'" style="font-size:0.85rem;padding:6px 14px;" onclick="setLeaderboardSort(\'total\')">Sort by Total Value</button> ' +
+          '<button class="tab-btn'+(sortMode==='gain'?' active':'')+'" style="font-size:0.85rem;padding:6px 14px;" onclick="setLeaderboardSort(\'gain\')">Sort by Gain %</button>' +
+        '</div>' +
+      '</div>' +
+      (ranked.length ? '<table style="margin-top:10px;"><thead><tr><th>Rank</th><th>Student</th><th>Total Portfolio</th><th>Cash</th><th>Holdings Value</th><th>Gain / Loss</th></tr></thead><tbody>'+rows+'</tbody></table>'
+        : '<div class="empty-note">No students on the roster yet.</div>') +
+    '</div>'
+  );
+}
+
+function buildTeacherApp(){
+  const t = state.teacherTab;
+  let body = '';
+  if(t==='roster') body = buildTeacherRoster();
+  else if(t==='grading') body = buildTeacherGrading();
+  else if(t==='records') body = buildTeacherRecords();
+  else if(t==='class') body = buildClassPerformance(true);
+  else if(t==='leaderboard') body = buildLeaderboard();
+  return (
+    '<div class="topbar">' +
+      '<div class="brand"><div><div class="brand-title">🌿 Growing Portfolios</div><div class="brand-sub">Teacher Console</div></div></div>' +
+      '<div class="who"><button class="btn ghost small" onclick="logout()">Log out</button></div>' +
+    '</div>' +
+    '<div class="tabs">' +
+      tabBtn('roster',t,'🗂️ Roster & PINs',"goTeacherTab('roster')") +
+      tabBtn('grading',t,'🌟 Grading',"goTeacherTab('grading')") +
+      tabBtn('records',t,'🛠️ Student Records',"goTeacherTab('records')") +
+      tabBtn('class',t,'🏫 Class Performance',"goTeacherTab('class')") +
+      tabBtn('leaderboard',t,'🏆 Leaderboard',"goTeacherTab('leaderboard')") +
+    '</div>' +
+    body
+  );
+}
+
+function buildTeacherRoster(){
+  const rows = state.roster.map(s=>(
+    '<tr><td><strong>'+esc(s.name)+'</strong></td><td><code>'+esc(s.pin)+'</code></td>' +
+    '<td><button class="btn danger small" onclick="removeStudent(\'+s.id+\')">Remove</button></td></tr>'
+  )).join('');
+  return (
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">⚙️</div>' +
+      '<h3>Simulation settings</h3>' +
+      '<div class="field-row">' +
+        '<div><label>Starting cash (for new students)</label><input type="number" id="settingStartingCash" min="1" step="1" value="'+state.settings.startingCash+'"></div>' +
+        '<div><label>Sell fee percentage</label><input type="number" id="settingFeePercent" min="0" step="0.1" value="'+state.settings.feePercent+'"></div>' +
+      '</div>' +
+      '<div class="small-note">Changing the starting cash only affects students added from now on — it won\'t change cash already in play. The fee percentage applies to every sell right away.</div>' +
+      '<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:700;color:var(--ink-soft);">' +
+        '<input type="checkbox" id="settingStudentsCanEdit" style="width:auto;" '+(state.settings.studentsCanEdit?'checked':'')+'> Allow students to edit or delete their own past transactions and price updates' +
+      '</label>' +
+      '<div class="small-note">You can always edit or delete any student\'s entries from the Student Records tab, regardless of this setting.</div>' +
+      '<button class="btn clay" style="margin-top:14px;" onclick="saveSettings()">Save settings 🌾</button>' +
+    '</div>' +
+    '<div class="grid grid-2">' +
+      '<div class="card">' +
+        '<div class="sticker">📓</div>' +
+        '<h3>Add a student</h3>' +
+        '<label>Student name</label><input type="text" id="newStudentName" placeholder="e.g. Jordan P.">' +
+        '<label>PIN (leave blank to auto-generate)</label><input type="text" id="newStudentPin" placeholder="e.g. 4821">' +
+        '<button class="btn" style="margin-top:14px;width:100%" onclick="addStudent()">Add to roster 🌿</button>' +
+      '</div>' +
+      '<div class="card dashed">' +
+        '<div class="sticker">🗝️</div>' +
+        '<h3>Class roster</h3>' +
+        (rows ? '<table><thead><tr><th>Name</th><th>PIN</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'
+              : '<div class="empty-note">No students added yet.</div>') +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function buildTeacherRecords(){
+  const options = '<option value="">— Choose a student —</option>' +
+    state.roster.map(s=>'<option value="'+s.id+'" '+(state.teacherSelectedStudentId===s.id?'selected':'')+'>'+esc(s.name)+'</option>').join('');
+  let detail = '<div class="empty-note">Pick a student above to view or correct their trades and price updates.</div>';
+  if(state.teacherSelectedStudentId && state.teacherStudentData){
+    const sd = state.teacherStudentData;
+    const hv = holdingsValue(sd.holdings);
+    const total = sd.cash + hv;
+    detail = (
+      '<div class="grid grid-3" style="margin-bottom:16px;">' +
+        '<div class="card stat-card"><div class="label">Cash</div><div class="value">'+money(sd.cash)+'</div></div>' +
+        '<div class="card stat-card"><div class="label">Holdings value</div><div class="value">'+money(hv)+'</div></div>' +
+        '<div class="card stat-card"><div class="label">Total portfolio</div><div class="value">'+money(total)+'</div></div>' +
+      '</div>' +
+      '<div class="small-note" style="margin-bottom:8px;">Editing or deleting an entry below recalculates this student\'s cash, holdings, and every chart automatically.</div>' +
+      '<div style="overflow-x:auto;">' + buildHistoryTable(sd, 'teacher', true) + '</div>'
+    );
+  }
+  return (
+    '<div class="card" style="margin-bottom:18px;">' +
+      '<div class="sticker">🛠️</div>' +
+      '<h3>Student records</h3>' +
+      '<label>Student</label><select id="teacherStudentSelect" onchange="teacherSelectStudent(this.value)">'+options+'</select>' +
+    '</div>' +
+    '<div class="card">' + detail + '</div>'
+  );
+}
+
+function buildTeacherGrading(){
+  const periodCards = state.gradePeriods.map(p=>{
+    const studentRows = state.roster.map(s=>{
+      const d = state.allStudentData[s.id] || freshStudentData();
+      const updates = d.transactions.filter(tx=>tx.type==='priceUpdate' && tx.date>=p.start && tx.date<=p.end).length;
+      const existing = (state.grades[s.id] && state.grades[s.id][p.id]) || {grade:'', note:''};
+      return (
+        '<tr><td><strong>'+esc(s.name)+'</strong></td><td>'+updates+' update'+(updates===1?'':'s')+'</td>' +
+        '<td><input type="text" id="grade-'+s.id+'-'+p.id+'" value="'+esc(existing.grade)+'" placeholder="e.g. 100 or A" style="width:90px;"></td>' +
+        '<td><input type="text" id="note-'+s.id+'-'+p.id+'" value="'+esc(existing.note)+'" placeholder="optional note"></td>' +
+        '<td><button class="btn small" onclick="saveGrade(\'+s.id+\',\'+p.id+\')">Save</button></td></tr>'
+      );
+    }).join('');
+    return (
+      '<div class="card" style="margin-bottom:16px;">' +
+        '<div class="flex-between"><h4>'+esc(p.label)+' <span class="muted">('+p.start+' → '+p.end+')</span></h4>' +
+        '<button class="btn ghost small" onclick="removeGradePeriod(\'+p.id+\')">Delete period</button></div>' +
+        (state.roster.length ? '<table><thead><tr><th>Student</th><th>Price updates logged</th><th>Grade</th><th>Note</th><th></th></tr></thead><tbody>'+studentRows+'</tbody></table>'
+          : '<div class="empty-note">Add students to the roster first.</div>') +
+      '</div>'
+    );
+  }).join('');
+  const suggestedStart = state.gradePeriods.length ? addDays(state.gradePeriods[state.gradePeriods.length-1].end, 1) : todayStr();
+  return (
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">🌟</div>' +
+      '<h3>New two-week grading period</h3>' +
+      '<div class="field-row">' +
+        '<div><label>Label</label><input type="text" id="periodLabel" placeholder="Period '+(state.gradePeriods.length+1)+'"></div>' +
+        '<div><label>Start date</label><input type="date" id="periodStart" value="'+suggestedStart+'"></div>' +
+      '</div>' +
+      '<label>End date</label><input type="date" id="periodEnd" value="'+addDays(suggestedStart,13)+'">' +
+      '<button class="btn clay" style="margin-top:14px;width:100%" onclick="addGradePeriod()">Create grading period</button>' +
+    '</div>' +
+    (periodCards || '<div class="card"><div class="empty-note">No grading periods yet — create one above.</div></div>')
+  );
+}
+
+/* ---------- Charts ---------- */
+window._charts = {};
+function drawLine(canvasId, labels, datasets, currency){
+  try{
+    const el = document.getElementById(canvasId);
+    if(!el) return;
+    if(window._charts[canvasId]){ window._charts[canvasId].destroy(); }
+    const cleanDatasets = datasets.map(ds => Object.assign({}, ds, {
+      data: ds.data.map(v => (typeof v === 'number' && isFinite(v)) ? v : null)
+    }));
+    window._charts[canvasId] = new Chart(el, {
+      type: 'line',
+      data: { labels, datasets: cleanDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        spanGaps: true,
+        interaction: { mode:'index', intersect:false },
+        scales: {
+          x: { ticks: { color: '#77705c', maxRotation:0, autoSkip:true }, grid: { display:false } },
+          y: { ticks: { color:'#77705c', callback: v => currency ? ('$'+Number(v).toLocaleString()) : v }, grid: { color:'#e9e5d4' } }
+        },
+        plugins: {
+          legend: { labels: { color:'#4a4536', font:{family:'Nunito', weight:'700'} } },
+          tooltip: { callbacks: { label: c => c.dataset.label + ': ' + (currency ? ('$'+Number(c.parsed.y).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})) : c.parsed.y) } }
+        }
+      }
+    });
+  }catch(e){
+    console.error('Chart failed to render:', canvasId, e);
+  }
+}
+
+function postRender(){
+  if(state.view==='student' && state.studentTab==='overview'){
+    const sd = state.studentData;
+    drawLine('overviewChart', sd.portfolioHistory.map(p=>p.date), [{
+      label: 'Total portfolio value', data: sd.portfolioHistory.map(p=>p.total),
+      borderColor:'#6b7a58', backgroundColor:'rgba(138,154,110,0.15)', fill:true, tension:0.25, pointRadius:2
+    }], true);
+  }
+  if(state.view==='student' && state.studentTab==='mystocks'){
+    const sd = state.studentData;
+    Object.keys(sd.priceHistory).forEach(t=>{
+      try{
+        const hist = sd.priceHistory[t];
+        const canvasId = 'stockChart_' + t.replace(/[^a-zA-Z0-9]/g,'');
+        drawLine(canvasId, hist.map(p=>p.date), [{
+          label: t + ' price', data: hist.map(p=>p.price),
+          borderColor:'#b57b5a', backgroundColor:'rgba(181,123,90,0.12)', fill:true, tension:0.25, pointRadius:2
+        }], true);
+      }catch(e){
+        console.error('Stock chart failed for ticker:', t, e);
+      }
+    });
+  }
+  if((state.view==='student' && state.studentTab==='class') || (state.view==='teacher' && state.teacherTab==='class')){
+    try{
+      const dateSet = new Set();
+      state.roster.forEach(s=>{
+        const d = state.allStudentData[s.id];
+        if(d) d.portfolioHistory.forEach(p=>dateSet.add(p.date));
+      });
+      if(dateSet.size===0) dateSet.add(todayStr());
+      const dates = Array.from(dateSet).sort();
+      const palette = ['#8a9a6e','#b57b5a','#7a8fae','#b57b9e','#c9a45c','#6fae9d','#a85c4d','#5f8f8f','#9c8a5e','#7a6f9c','#5b8c5a','#a06a3f'];
+      const datasets = state.roster.map((s,i)=>{
+        const d = state.allStudentData[s.id] || freshStudentData();
+        let lastVal = null;
+        const data = dates.map(date=>{
+          const points = d.portfolioHistory.filter(p=>p.date<=date);
+          if(points.length===0) return lastVal;
+          lastVal = points[points.length-1].total;
+          return lastVal;
+        });
+        return { label: s.name, data, borderColor: palette[i%palette.length], backgroundColor:'transparent', tension:0.25, spanGaps:true, pointRadius:1.5 };
+      });
+      drawLine('classChart', dates, datasets, true);
+    }catch(e){
+      console.error('Class performance chart failed:', e);
+    }
+  }
+}
+</script>
+</body>
+</html>
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Growing Portfolios — Classroom Stock Exchange</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
