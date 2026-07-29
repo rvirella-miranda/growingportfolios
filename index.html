@@ -267,7 +267,8 @@ let state = {
   editingTxId: null,
   editingContext: null,
   teacherSelectedStudentId: null,
-  teacherStudentData: null
+  teacherStudentData: null,
+  editingGradeCell: null
 };
 
 function freshStudentData(){
@@ -628,13 +629,32 @@ async function removeGradePeriod(id){
   await saveShared('grades', state.grades);
   render();
 }
-async function saveGrade(studentId, periodId){
-  const grade = val('grade-'+studentId+'-'+periodId).trim();
-  const note = val('note-'+studentId+'-'+periodId).trim();
+async function commitGrade(studentId, periodId, grade, note){
   if(!state.grades[studentId]) state.grades[studentId] = {};
   state.grades[studentId][periodId] = {grade, note, savedOn: todayStr()};
   await saveShared('grades', state.grades);
+}
+async function saveGrade(studentId, periodId){
+  const grade = val('grade-'+studentId+'-'+periodId).trim();
+  const note = val('note-'+studentId+'-'+periodId).trim();
+  await commitGrade(studentId, periodId, grade, note);
   showToast('Saved grade for ' + (state.roster.find(s=>s.id===studentId)||{}).name + '.', 'success');
+  render();
+}
+function startGradebookEdit(studentId, periodId){
+  state.editingGradeCell = {studentId, periodId};
+  render();
+}
+function cancelGradebookEdit(){
+  state.editingGradeCell = null;
+  render();
+}
+async function saveGradebookCell(studentId, periodId){
+  const grade = val('gb-grade-'+studentId+'-'+periodId).trim();
+  const note = val('gb-note-'+studentId+'-'+periodId).trim();
+  await commitGrade(studentId, periodId, grade, note);
+  state.editingGradeCell = null;
+  showToast('Updated grade for ' + (state.roster.find(s=>s.id===studentId)||{}).name + '.', 'success');
   render();
 }
 
@@ -666,7 +686,7 @@ function goStudentTab(tab){
 }
 function goTeacherTab(tab){
   state.teacherTab = tab;
-  state.editingTxId = null; state.editingContext = null;
+  state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
   if(tab === 'grading' || tab === 'class' || tab === 'leaderboard'){ loadAllStudentData().then(render); }
   else render();
 }
@@ -1090,9 +1110,18 @@ function buildGradebookOverview(){
   const rows = state.roster.map(s=>{
     const cells = state.gradePeriods.map(p=>{
       const entry = state.grades[s.id] && state.grades[s.id][p.id];
+      const isEditing = state.editingGradeCell && state.editingGradeCell.studentId===s.id && state.editingGradeCell.periodId===p.id;
+      if(isEditing){
+        return '<td style="min-width:150px;">' +
+          '<input type="text" id="gb-grade-'+s.id+'-'+p.id+'" value="'+esc(entry?entry.grade:'')+'" placeholder="e.g. 100 or A" style="width:100%;margin-bottom:4px;">' +
+          '<input type="text" id="gb-note-'+s.id+'-'+p.id+'" value="'+esc(entry?entry.note:'')+'" placeholder="note" style="width:100%;margin-bottom:4px;">' +
+          '<div style="white-space:nowrap;"><button class="btn small" onclick="saveGradebookCell(\''+s.id+'\',\''+p.id+'\')">Save</button> ' +
+          '<button class="btn ghost small" onclick="cancelGradebookEdit()">Cancel</button></div>' +
+        '</td>';
+      }
       const gradeText = (entry && entry.grade) ? esc(entry.grade) : '<span class="muted">—</span>';
       const noteIcon = (entry && entry.note) ? ' <span title="'+esc(entry.note)+'">📝</span>' : '';
-      return '<td>'+gradeText+noteIcon+'</td>';
+      return '<td>'+gradeText+noteIcon+' <button class="btn ghost small" style="padding:2px 8px;font-size:0.72rem;" onclick="startGradebookEdit(\''+s.id+'\',\''+p.id+'\')">✏️</button></td>';
     }).join('');
     const numericGrades = state.gradePeriods
       .map(p => state.grades[s.id] && state.grades[s.id][p.id] && state.grades[s.id][p.id].grade)
@@ -1106,7 +1135,7 @@ function buildGradebookOverview(){
   return (
     '<div class="card" style="margin-bottom:18px;overflow-x:auto;">' +
       '<h3>📔 Gradebook overview</h3>' +
-      '<div class="small-note" style="margin-bottom:8px;">Every saved grade at a glance. The Average column only includes periods graded with a plain number. Click into a period card below to add or edit a grade.</div>' +
+      '<div class="small-note" style="margin-bottom:8px;">Every saved grade at a glance. The Average column only includes periods graded with a plain number. Click the ✏️ on any grade to edit it right here, or use the period cards below.</div>' +
       '<table><thead><tr>'+header+'</tr></thead><tbody>'+rows+'</tbody></table>' +
     '</div>'
   );
