@@ -1021,7 +1021,7 @@ function buildTeacherApp(){
 function buildTeacherRoster(){
   const rows = state.roster.map(s=>(
     '<tr><td><strong>'+esc(s.name)+'</strong></td><td><code>'+esc(s.pin)+'</code></td>' +
-    '<td><button class="btn danger small" onclick="removeStudent(\'+s.id+\')">Remove</button></td></tr>'
+    '<td><button class="btn danger small" onclick="removeStudent(\''+s.id+'\')">Remove</button></td></tr>'
   )).join('');
   return (
     '<div class="card dashed" style="margin-bottom:18px;">' +
@@ -1084,6 +1084,34 @@ function buildTeacherRecords(){
   );
 }
 
+function buildGradebookOverview(){
+  if(!state.roster.length || !state.gradePeriods.length) return '';
+  const header = '<th>Student</th>' + state.gradePeriods.map(p=>'<th>'+esc(p.label)+'</th>').join('') + '<th>Average</th>';
+  const rows = state.roster.map(s=>{
+    const cells = state.gradePeriods.map(p=>{
+      const entry = state.grades[s.id] && state.grades[s.id][p.id];
+      const gradeText = (entry && entry.grade) ? esc(entry.grade) : '<span class="muted">—</span>';
+      const noteIcon = (entry && entry.note) ? ' <span title="'+esc(entry.note)+'">📝</span>' : '';
+      return '<td>'+gradeText+noteIcon+'</td>';
+    }).join('');
+    const numericGrades = state.gradePeriods
+      .map(p => state.grades[s.id] && state.grades[s.id][p.id] && state.grades[s.id][p.id].grade)
+      .map(g => parseFloat(g))
+      .filter(n => !isNaN(n) && isFinite(n));
+    const avgText = numericGrades.length
+      ? '<strong>'+(numericGrades.reduce((a,b)=>a+b,0)/numericGrades.length).toFixed(1)+'</strong>'
+      : '<span class="muted">—</span>';
+    return '<tr><td><strong>'+esc(s.name)+'</strong></td>'+cells+'<td>'+avgText+'</td></tr>';
+  }).join('');
+  return (
+    '<div class="card" style="margin-bottom:18px;overflow-x:auto;">' +
+      '<h3>📔 Gradebook overview</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">Every saved grade at a glance. The Average column only includes periods graded with a plain number. Click into a period card below to add or edit a grade.</div>' +
+      '<table><thead><tr>'+header+'</tr></thead><tbody>'+rows+'</tbody></table>' +
+    '</div>'
+  );
+}
+
 function buildTeacherGrading(){
   const periodCards = state.gradePeriods.map(p=>{
     const studentRows = state.roster.map(s=>{
@@ -1094,13 +1122,13 @@ function buildTeacherGrading(){
         '<tr><td><strong>'+esc(s.name)+'</strong></td><td>'+updates+' update'+(updates===1?'':'s')+'</td>' +
         '<td><input type="text" id="grade-'+s.id+'-'+p.id+'" value="'+esc(existing.grade)+'" placeholder="e.g. 100 or A" style="width:90px;"></td>' +
         '<td><input type="text" id="note-'+s.id+'-'+p.id+'" value="'+esc(existing.note)+'" placeholder="optional note"></td>' +
-        '<td><button class="btn small" onclick="saveGrade(\'+s.id+\',\'+p.id+\')">Save</button></td></tr>'
+        '<td><button class="btn small" onclick="saveGrade(\''+s.id+'\',\''+p.id+'\')">Save</button></td></tr>'
       );
     }).join('');
     return (
       '<div class="card" style="margin-bottom:16px;">' +
         '<div class="flex-between"><h4>'+esc(p.label)+' <span class="muted">('+p.start+' → '+p.end+')</span></h4>' +
-        '<button class="btn ghost small" onclick="removeGradePeriod(\'+p.id+\')">Delete period</button></div>' +
+        '<button class="btn ghost small" onclick="removeGradePeriod(\''+p.id+'\')">Delete period</button></div>' +
         (state.roster.length ? '<table><thead><tr><th>Student</th><th>Price updates logged</th><th>Grade</th><th>Note</th><th></th></tr></thead><tbody>'+studentRows+'</tbody></table>'
           : '<div class="empty-note">Add students to the roster first.</div>') +
       '</div>'
@@ -1108,6 +1136,7 @@ function buildTeacherGrading(){
   }).join('');
   const suggestedStart = state.gradePeriods.length ? addDays(state.gradePeriods[state.gradePeriods.length-1].end, 1) : todayStr();
   return (
+    buildGradebookOverview() +
     '<div class="card dashed" style="margin-bottom:18px;">' +
       '<div class="sticker">🌟</div>' +
       '<h3>New two-week grading period</h3>' +
