@@ -441,6 +441,19 @@ async function saveSettings(){
   render();
 }
 
+async function changeTeacherPin(){
+  const current = val('currentTeacherPin').trim();
+  const next = val('newTeacherPin').trim();
+  const confirmPin = val('confirmTeacherPin').trim();
+  if(current !== state.teacherPinValue){ showToast('Current PIN is incorrect.'); return; }
+  if(next.length < 4){ showToast('Choose a new PIN with at least 4 characters.'); return; }
+  if(next !== confirmPin){ showToast('New PINs do not match.'); return; }
+  state.teacherPinValue = next;
+  await saveShared('teacherPin', next);
+  showToast('Teacher PIN updated.', 'success');
+  render();
+}
+
 /* ---------- Roster (teacher) ---------- */
 async function addStudent(){
   const name = val('newStudentName').trim();
@@ -1057,6 +1070,16 @@ function buildTeacherRoster(){
       '</label>' +
       '<div class="small-note">You can always edit or delete any student\'s entries from the Student Records tab, regardless of this setting.</div>' +
       '<button class="btn clay" style="margin-top:14px;" onclick="saveSettings()">Save settings 🌾</button>' +
+    '</div>' +
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">🔑</div>' +
+      '<h3>Change your teacher PIN</h3>' +
+      '<label>Current PIN</label><input type="password" id="currentTeacherPin" placeholder="Enter your current PIN">' +
+      '<div class="field-row">' +
+        '<div><label>New PIN</label><input type="password" id="newTeacherPin" placeholder="At least 4 characters"></div>' +
+        '<div><label>Confirm new PIN</label><input type="password" id="confirmTeacherPin" placeholder="Retype new PIN"></div>' +
+      '</div>' +
+      '<button class="btn clay" style="margin-top:14px;" onclick="changeTeacherPin()">Update PIN</button>' +
     '</div>' +
     '<div class="grid grid-2">' +
       '<div class="card">' +
