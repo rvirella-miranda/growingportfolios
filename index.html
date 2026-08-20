@@ -166,6 +166,16 @@
   #toast.error{ background: var(--red); }
   #toast.success{ background: var(--sage-dark); }
 
+  .modal-overlay{
+    position: fixed; inset: 0; background: rgba(74,69,54,0.45);
+    display:flex; align-items:center; justify-content:center; z-index: 1000; padding: 20px;
+  }
+  .modal-box{
+    background: var(--paper); border: 1.5px solid var(--line); border-radius: 16px;
+    padding: 22px 24px; max-width: 420px; width:100%; box-shadow: var(--shadow);
+  }
+  .modal-box p{ margin:0; font-size:1rem; color: var(--ink); }
+
   .stock-card-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap:16px; }
   .status-open{ color: var(--sage-dark); font-weight:800; }
   .status-closed{ color: var(--ink-soft); font-weight:800; }
@@ -268,8 +278,36 @@ let state = {
   editingContext: null,
   teacherSelectedStudentId: null,
   teacherStudentData: null,
-  editingGradeCell: null
+  editingGradeCell: null,
+  pendingConfirm: null,
+  editingStudentPin: null
 };
+
+/* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
+function askConfirm(message, onConfirm){
+  state.pendingConfirm = { message, onConfirm };
+  render();
+}
+function resolveConfirm(confirmed){
+  const pending = state.pendingConfirm;
+  state.pendingConfirm = null;
+  render();
+  if(confirmed && pending && pending.onConfirm) pending.onConfirm();
+}
+function buildConfirmModal(){
+  if(!state.pendingConfirm) return '';
+  return (
+    '<div class="modal-overlay">' +
+      '<div class="modal-box">' +
+        '<p>'+esc(state.pendingConfirm.message)+'</p>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">' +
+          '<button class="btn ghost" onclick="resolveConfirm(false)">Cancel</button>' +
+          '<button class="btn danger" onclick="resolveConfirm(true)">Confirm</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
 
 function freshStudentData(){
   const start = state.settings.startingCash;
@@ -470,14 +508,35 @@ async function addStudent(){
 async function removeStudent(id){
   const entry = state.roster.find(s=>s.id===id);
   if(!entry) return;
-  if(!confirm('Remove ' + entry.name + ' from the roster? Their trading history will be deleted.')) return;
-  state.roster = state.roster.filter(s=>s.id!==id);
+  askConfirm('Remove ' + entry.name + ' from the roster? Their trading history will be deleted.', async ()=>{
+    state.roster = state.roster.filter(s=>s.id!==id);
+    await saveShared('roster', state.roster);
+    await deleteShared('student:'+id);
+    delete state.grades[id];
+    await saveShared('grades', state.grades);
+    delete state.allStudentData[id];
+    showToast('Removed ' + entry.name + '.', 'success');
+    render();
+  });
+}
+
+function startEditPin(id){
+  state.editingStudentPin = id;
+  render();
+}
+function cancelEditPin(){
+  state.editingStudentPin = null;
+  render();
+}
+async function saveStudentPin(id){
+  const newPin = val('editPin-'+id).trim();
+  if(!newPin){ showToast('Enter a PIN.'); return; }
+  const entry = state.roster.find(s=>s.id===id);
+  if(!entry) return;
+  entry.pin = newPin;
   await saveShared('roster', state.roster);
-  await deleteShared('student:'+id);
-  delete state.grades[id];
-  await saveShared('grades', state.grades);
-  delete state.allStudentData[id];
-  showToast('Removed ' + entry.name + '.', 'success');
+  state.editingStudentPin = null;
+  showToast('Updated PIN for ' + entry.name + '.', 'success');
   render();
 }
 
@@ -583,12 +642,13 @@ async function saveEditTx(context, txId){
   render();
 }
 async function deleteTx(context, txId){
-  if(!confirm('Delete this entry? Cash, holdings, and charts will be recalculated.')) return;
-  const sd = getTargetData(context);
-  applyTxDelete(sd, txId);
-  await saveTargetData(context);
-  showToast('Entry deleted — totals recalculated.', 'success');
-  render();
+  askConfirm('Delete this entry? Cash, holdings, and charts will be recalculated.', async ()=>{
+    const sd = getTargetData(context);
+    applyTxDelete(sd, txId);
+    await saveTargetData(context);
+    showToast('Entry deleted — totals recalculated.', 'success');
+    render();
+  });
 }
 
 function buildHistoryTable(sd, context, canEdit){
@@ -635,12 +695,13 @@ async function addGradePeriod(){
   render();
 }
 async function removeGradePeriod(id){
-  if(!confirm('Delete this grading period and its saved grades?')) return;
-  state.gradePeriods = state.gradePeriods.filter(p=>p.id!==id);
-  Object.keys(state.grades).forEach(sid=>{ if(state.grades[sid]) delete state.grades[sid][id]; });
-  await saveShared('gradePeriods', state.gradePeriods);
-  await saveShared('grades', state.grades);
-  render();
+  askConfirm('Delete this grading period and its saved grades?', async ()=>{
+    state.gradePeriods = state.gradePeriods.filter(p=>p.id!==id);
+    Object.keys(state.grades).forEach(sid=>{ if(state.grades[sid]) delete state.grades[sid][id]; });
+    await saveShared('gradePeriods', state.gradePeriods);
+    await saveShared('grades', state.grades);
+    render();
+  });
 }
 async function commitGrade(studentId, periodId, grade, note){
   if(!state.grades[studentId]) state.grades[studentId] = {};
@@ -711,9 +772,11 @@ function setLeaderboardSort(mode){
 /* ---------- Rendering ---------- */
 function render(){
   const app = document.getElementById('app');
-  if(state.view === 'login') app.innerHTML = buildLogin();
-  else if(state.view === 'student') app.innerHTML = buildStudentApp();
-  else if(state.view === 'teacher') app.innerHTML = buildTeacherApp();
+  let html = '';
+  if(state.view === 'login') html = buildLogin();
+  else if(state.view === 'student') html = buildStudentApp();
+  else if(state.view === 'teacher') html = buildTeacherApp();
+  app.innerHTML = html + buildConfirmModal();
   postRender();
 }
 
@@ -1052,10 +1115,18 @@ function buildTeacherApp(){
 }
 
 function buildTeacherRoster(){
-  const rows = state.roster.map(s=>(
-    '<tr><td><strong>'+esc(s.name)+'</strong></td><td><code>'+esc(s.pin)+'</code></td>' +
-    '<td><button class="btn danger small" onclick="removeStudent(\''+s.id+'\')">Remove</button></td></tr>'
-  )).join('');
+  const rows = state.roster.map(s=>{
+    const pinCell = (state.editingStudentPin === s.id)
+      ? ('<input type="text" id="editPin-'+s.id+'" value="'+esc(s.pin)+'" style="width:90px;">')
+      : ('<code>'+esc(s.pin)+'</code>');
+    const actionCell = (state.editingStudentPin === s.id)
+      ? ('<button class="btn small" onclick="saveStudentPin(\''+s.id+'\')">Save</button> ' +
+         '<button class="btn ghost small" onclick="cancelEditPin()">Cancel</button>')
+      : ('<button class="btn ghost small" onclick="startEditPin(\''+s.id+'\')">Change PIN</button> ' +
+         '<button class="btn danger small" onclick="removeStudent(\''+s.id+'\')">Remove</button>');
+    return '<tr><td><strong>'+esc(s.name)+'</strong></td><td>'+pinCell+'</td>' +
+      '<td style="white-space:nowrap;">'+actionCell+'</td></tr>';
+  }).join('');
   return (
     '<div class="card dashed" style="margin-bottom:18px;">' +
       '<div class="sticker">⚙️</div>' +
