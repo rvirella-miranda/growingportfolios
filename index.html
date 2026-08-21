@@ -351,8 +351,10 @@ function recomputeStudent(sd){
   });
   let cash = start;
   const holdings = {};
-  const priceHistory = {};
-  const portfolioHistory = [{date: startDate, cash: start, holdingsValue: 0, total: start}];
+  const rawPriceHistory = {};
+  const everHeldTickers = new Set();
+  const rawPoints = [{date: startDate, cash: start, holdingsValue: 0, total: start, stockValues: {}}];
+
   txs.forEach(tx=>{
     if(tx.type === 'buy'){
       const cost = tx.price*tx.shares;
@@ -367,8 +369,8 @@ function recomputeStudent(sd){
         holdings[tx.ticker] = {name: tx.name, shares: tx.shares, avgCost: tx.price, currentPrice: tx.price};
       }
       tx.total = cost; tx.fee = 0;
-      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
-      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+      if(!rawPriceHistory[tx.ticker]) rawPriceHistory[tx.ticker] = [];
+      rawPriceHistory[tx.ticker].push({date: tx.date, price: tx.price});
     } else if(tx.type === 'sell'){
       const gross = tx.price*tx.shares;
       const fee = (tx.fee != null && !isNaN(tx.fee)) ? tx.fee : gross*(state.settings.feePercent/100);
@@ -380,22 +382,62 @@ function recomputeStudent(sd){
         if(holdings[tx.ticker].shares <= 0.0001) delete holdings[tx.ticker];
       }
       tx.fee = fee; tx.total = net;
-      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
-      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+      if(!rawPriceHistory[tx.ticker]) rawPriceHistory[tx.ticker] = [];
+      rawPriceHistory[tx.ticker].push({date: tx.date, price: tx.price});
     } else if(tx.type === 'priceUpdate'){
       if(holdings[tx.ticker]) holdings[tx.ticker].currentPrice = tx.price;
       tx.total = 0; tx.fee = 0;
-      if(!priceHistory[tx.ticker]) priceHistory[tx.ticker] = [];
-      priceHistory[tx.ticker].push({date: tx.date, price: tx.price});
+      if(!rawPriceHistory[tx.ticker]) rawPriceHistory[tx.ticker] = [];
+      rawPriceHistory[tx.ticker].push({date: tx.date, price: tx.price});
     }
+    everHeldTickers.add(tx.ticker);
     const hv = holdingsValue(holdings);
-    portfolioHistory.push({date: tx.date, cash, holdingsValue: hv, total: cash+hv});
+    const stockValues = {};
+    everHeldTickers.forEach(t=>{
+      stockValues[t] = holdings[t] ? holdings[t].shares*holdings[t].currentPrice : 0;
+    });
+    rawPoints.push({date: tx.date, cash, holdingsValue: hv, total: cash+hv, stockValues});
   });
+
+  // Collapse to one point per date, keeping the last (most current) state recorded that day
+  const collapsedPoints = [];
+  rawPoints.forEach(p=>{
+    if(collapsedPoints.length && collapsedPoints[collapsedPoints.length-1].date === p.date){
+      collapsedPoints[collapsedPoints.length-1] = p;
+    } else {
+      collapsedPoints.push(p);
+    }
+  });
+
+  // Same collapse for each ticker's own price history (used by the My Stocks charts)
+  const priceHistory = {};
+  Object.keys(rawPriceHistory).forEach(t=>{
+    const arr = [];
+    rawPriceHistory[t].forEach(p=>{
+      if(arr.length && arr[arr.length-1].date === p.date){
+        arr[arr.length-1] = p;
+      } else {
+        arr.push(p);
+      }
+    });
+    priceHistory[t] = arr;
+  });
+
+  // Per-stock value-over-time series, aligned point-for-point with portfolioHistory's dates
+  const stockSeries = {};
+  Array.from(everHeldTickers).forEach(t=>{
+    stockSeries[t] = collapsedPoints.map(p => ({
+      date: p.date,
+      value: (p.stockValues && p.stockValues[t] != null) ? p.stockValues[t] : 0
+    }));
+  });
+
   sd.transactions = txs;
   sd.cash = cash;
   sd.holdings = holdings;
   sd.priceHistory = priceHistory;
-  sd.portfolioHistory = portfolioHistory;
+  sd.portfolioHistory = collapsedPoints.map(p=>({date:p.date, cash:p.cash, holdingsValue:p.holdingsValue, total:p.total}));
+  sd.stockSeries = stockSeries;
 }
 
 function applyTxEdit(sd, txId, fields){
@@ -895,7 +937,7 @@ function buildOverview(){
     '</div>' +
     '<div class="card" style="margin-bottom:18px;">' +
       '<h3>🌱 Portfolio value over time</h3>' +
-      '<div class="small-note" style="margin-bottom:8px;">This line moves when a stock\'s price changes or when you sell (fees apply) — buying at the listed price doesn\'t change your total by itself.</div>' +
+      '<div class="small-note" style="margin-bottom:8px;">The bold dark line is your total portfolio value — it moves when a stock\'s price changes or when you sell (fees apply); buying at the listed price doesn\'t change it by itself. The thinner colored lines show each individual stock\'s value.</div>' +
       '<div class="chart-wrap" style="height:320px;"><canvas id="overviewChart"></canvas></div>' +
     '</div>' +
     '<div class="card">' +
@@ -1328,10 +1370,35 @@ function drawLine(canvasId, labels, datasets, currency){
 function postRender(){
   if(state.view==='student' && state.studentTab==='overview'){
     const sd = state.studentData;
-    drawLine('overviewChart', sd.portfolioHistory.map(p=>p.date), [{
-      label: 'Total portfolio value', data: sd.portfolioHistory.map(p=>p.total),
-      borderColor:'#6b7a58', backgroundColor:'rgba(138,154,110,0.15)', fill:true, tension:0.25, pointRadius:2
-    }], true);
+    try{
+      const labels = sd.portfolioHistory.map(p=>p.date);
+      const tickers = Object.keys(sd.stockSeries || {});
+      const stockPalette = ['#c9a45c','#7a8fae','#b57b9e','#6fae9d','#a85c4d','#9c8a5e','#7a6f9c','#5b8c5a','#5f8f8f','#a06a3f'];
+      const stockDatasets = tickers.map((t,i)=>({
+        label: t,
+        data: sd.stockSeries[t].map(p=>p.value),
+        borderColor: stockPalette[i % stockPalette.length],
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        tension: 0.25,
+        pointRadius: 2,
+        spanGaps: true
+      }));
+      const totalDataset = {
+        label: 'Total portfolio value',
+        data: sd.portfolioHistory.map(p=>p.total),
+        borderColor: '#4a4536',
+        backgroundColor: 'rgba(74,69,54,0.10)',
+        borderWidth: 3.5,
+        fill: true,
+        tension: 0.25,
+        pointRadius: 3,
+        spanGaps: true
+      };
+      drawLine('overviewChart', labels, [...stockDatasets, totalDataset], true);
+    }catch(e){
+      console.error('Overview chart failed:', e);
+    }
   }
   if(state.view==='student' && state.studentTab==='mystocks'){
     const sd = state.studentData;
