@@ -495,6 +495,7 @@ async function studentLogin(){
   if(entry.pin !== pin){ showToast('That PIN doesn\'t match. Try again.'); return; }
   let data = await loadShared('student:'+id, null);
   if(!data){ data = freshStudentData(); await saveShared('student:'+id, data); }
+  else { recomputeStudent(data); }
   state.currentStudent = {id, name: entry.name};
   state.studentData = data;
   state.studentTab = 'overview';
@@ -795,7 +796,9 @@ async function saveGradebookCell(studentId, periodId){
 async function loadAllStudentData(){
   const results = await Promise.all(state.roster.map(s => loadShared('student:'+s.id, null)));
   state.roster.forEach((s, i)=>{
-    state.allStudentData[s.id] = results[i] || freshStudentData();
+    const d = results[i] || freshStudentData();
+    recomputeStudent(d);
+    state.allStudentData[s.id] = d;
   });
 }
 
@@ -803,7 +806,9 @@ async function teacherSelectStudent(id){
   state.teacherSelectedStudentId = id || null;
   state.editingTxId = null; state.editingContext = null;
   if(id){
-    state.teacherStudentData = await loadShared('student:'+id, null) || freshStudentData();
+    const d = await loadShared('student:'+id, null) || freshStudentData();
+    recomputeStudent(d);
+    state.teacherStudentData = d;
   } else {
     state.teacherStudentData = null;
   }
