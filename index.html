@@ -114,6 +114,10 @@
     background:#fffef9; font-family:'Nunito',sans-serif; font-size:0.95rem; color:var(--ink);
   }
   input:focus, select:focus{ outline:none; border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-pale); }
+  .locked-date{
+    width:100%; padding:9px 11px; border-radius:10px; border:1.5px dashed var(--line);
+    background: var(--paper-2); font-size:0.95rem; color:var(--ink-soft); box-sizing:border-box;
+  }
   .field-row{ display:grid; grid-template-columns: 1fr 1fr; gap:0 14px; }
   @media (max-width:600px){ .field-row{ grid-template-columns: 1fr; } }
 
@@ -243,12 +247,25 @@ async function deleteShared(key){
 function uid(){ return Math.random().toString(36).slice(2,9) + Date.now().toString(36); }
 function slugify(s){ return s.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'student'; }
 function genPin(){ return '' + Math.floor(1000 + Math.random()*9000); }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+function todayStr(){
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function money(n){ const v = Number(n)||0; const sign = v<0 ? '-' : ''; return sign + '$' + Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function pct(n){ const v = Number(n)||0; return (v>=0?'+':'') + v.toFixed(2) + '%'; }
-function addDays(dateStr, n){ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function addDays(dateStr, n){
+  const [y,m,day] = dateStr.split('-').map(Number);
+  const d = new Date(y, m-1, day);
+  d.setDate(d.getDate()+n);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function timeStr(ms){
+  if(!ms) return '—';
+  try{ return new Date(ms).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+  catch(e){ return '—'; }
+}
 
 function showToast(msg, type){
   let t = document.getElementById('toast');
@@ -553,7 +570,7 @@ async function buyStock(){
   const ticker = val('buyTicker').trim().toUpperCase();
   const price = parseFloat(val('buyPrice'));
   const shares = parseFloat(val('buyShares'));
-  const date = val('buyDate') || todayStr();
+  const date = todayStr();
   if(!name || !ticker || !(price>0) || !(shares>0)){ showToast('Fill in stock name, ticker, price, and shares with valid values.'); return; }
   const cost = price*shares;
   if(cost > state.studentData.cash + 0.001){ showToast('Not enough cash — this purchase costs ' + money(cost) + ' but you have ' + money(state.studentData.cash) + '.'); return; }
@@ -568,7 +585,7 @@ async function sellStock(){
   const ticker = val('sellTicker');
   const price = parseFloat(val('sellPrice'));
   const shares = parseFloat(val('sellShares'));
-  const date = val('sellDate') || todayStr();
+  const date = todayStr();
   const h = state.studentData.holdings[ticker];
   if(!h || !(price>0) || !(shares>0)){ showToast('Choose a stock you own and enter a valid price and share count.'); return; }
   if(shares > h.shares + 0.0001){ showToast('You only own ' + h.shares + ' shares of ' + ticker + '.'); return; }
@@ -586,7 +603,7 @@ async function sellStock(){
 async function updateStockPrice(){
   const ticker = val('updTicker');
   const price = parseFloat(val('updPrice'));
-  const date = val('updDate') || todayStr();
+  const date = todayStr();
   const h = state.studentData.holdings[ticker];
   if(!h || !(price>0)){ showToast('Choose a stock you hold and enter a valid new price.'); return; }
   state.studentData.transactions.push({id: uid(), date, type:'priceUpdate', ticker, name: h.name, shares:0, price, fee:0, total:0, createdAt: Date.now()});
@@ -663,6 +680,7 @@ function buildHistoryTable(sd, context, canEdit){
       const feeField = tx.type==='sell' ? ('<input type="number" id="editFee-'+tx.id+'" value="'+tx.fee+'" step="0.01" style="width:80px;">') : '—';
       return '<tr>'+
         '<td><input type="date" id="editDate-'+tx.id+'" value="'+tx.date+'" style="width:135px;"></td>'+
+        '<td class="muted">'+timeStr(tx.createdAt)+'</td>'+
         '<td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
         '<td><input type="text" id="editTicker-'+tx.id+'" value="'+esc(tx.ticker)+'" style="width:65px;text-transform:uppercase;"></td>'+
         '<td><input type="text" id="editName-'+tx.id+'" value="'+esc(tx.name)+'" style="width:120px;"></td>'+
@@ -674,14 +692,14 @@ function buildHistoryTable(sd, context, canEdit){
             '<button class="btn ghost small" onclick="cancelEditTx()">Cancel</button></td>'+
       '</tr>';
     }
-    return '<tr><td>'+tx.date+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+    return '<tr><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
       '<td><strong>'+esc(tx.ticker)+'</strong></td><td>'+esc(tx.name)+'</td>'+
       '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td>'+
       (canEdit ? ('<td style="white-space:nowrap;"><button class="btn ghost small" onclick="startEditTx(\''+context+'\',\''+tx.id+'\')">Edit</button> '+
                  '<button class="btn danger small" onclick="deleteTx(\''+context+'\',\''+tx.id+'\')">Delete</button></td>') : '<td></td>') +
     '</tr>';
   }).join('');
-  return '<table><thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th>Name</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+  return '<table><thead><tr><th>Date</th><th>Time</th><th>Type</th><th>Ticker</th><th>Name</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
 
@@ -910,7 +928,7 @@ function buildTrade(){
   }).slice(0,12).map(tx=>{
     const pillClass = tx.type==='buy'?'buy':(tx.type==='sell'?'sell':'upd');
     const pillLabel = tx.type==='buy'?'BUY':(tx.type==='sell'?'SELL':'PRICE UPDATE');
-    return '<tr><td>'+tx.date+'</td><td><span class="pill '+pillClass+'">'+pillLabel+'</span></td><td><strong>'+tx.ticker+'</strong></td>'+
+    return '<tr><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass+'">'+pillLabel+'</span></td><td><strong>'+tx.ticker+'</strong></td>'+
       '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td></tr>';
   }).join('');
   return (
@@ -924,7 +942,7 @@ function buildTrade(){
         '<div><label>Ticker</label><input type="text" id="buyTicker" placeholder="e.g. NOVA" style="text-transform:uppercase"></div></div>' +
         '<div class="field-row"><div><label>Price per share</label><input type="number" id="buyPrice" min="0.01" step="0.01" placeholder="0.00"></div>' +
         '<div><label>Shares to buy</label><input type="number" id="buyShares" min="1" step="1" placeholder="0"></div></div>' +
-        '<label>Date</label><input type="date" id="buyDate" value="'+todayStr()+'">' +
+        '<label>Date</label><div class="locked-date">📅 '+todayStr()+' <span class="muted">(today — locked)</span></div>' +
         '<button class="btn" style="margin-top:14px;width:100%" onclick="buyStock()">Buy shares 🌱</button>' +
       '</div>' +
       '<div class="card dashed">' +
@@ -934,7 +952,7 @@ function buildTrade(){
           '<label>Stock</label><select id="sellTicker">'+sellOptions+'</select>' +
           '<div class="field-row"><div><label>Price per share</label><input type="number" id="sellPrice" min="0.01" step="0.01" placeholder="0.00"></div>' +
           '<div><label>Shares to sell</label><input type="number" id="sellShares" min="1" step="1" placeholder="0"></div></div>' +
-          '<label>Date</label><input type="date" id="sellDate" value="'+todayStr()+'">' +
+          '<label>Date</label><div class="locked-date">📅 '+todayStr()+' <span class="muted">(today — locked)</span></div>' +
           '<div class="small-note">A '+state.settings.feePercent+'% fee on the total sale is charged for every sell.</div>' +
           '<button class="btn danger" style="margin-top:14px;width:100%" onclick="sellStock()">Sell shares 💸</button>'
         ) : '<div class="empty-note">You don\'t own any stocks to sell yet.</div>') +
@@ -943,7 +961,7 @@ function buildTrade(){
     '<div class="card" style="margin-top:18px;">' +
       '<h3>🧾 Recent transactions</h3>' +
       '<div class="small-note" style="margin-bottom:6px;">Need to fix a mistake? Visit the History tab to edit or delete an entry.</div>' +
-      (txRows ? '<table><thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th></tr></thead><tbody>'+txRows+'</tbody></table>'
+      (txRows ? '<table><thead><tr><th>Date</th><th>Time</th><th>Type</th><th>Ticker</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th></tr></thead><tbody>'+txRows+'</tbody></table>'
               : '<div class="empty-note">No transactions yet.</div>') +
     '</div>'
   );
@@ -968,7 +986,7 @@ function buildUpdatePrices(){
         (heldTickers.length ? (
           '<label>Stock</label><select id="updTicker">'+options+'</select>' +
           '<label>New price per share</label><input type="number" id="updPrice" min="0.01" step="0.01" placeholder="0.00">' +
-          '<label>Date</label><input type="date" id="updDate" value="'+todayStr()+'">' +
+          '<label>Date</label><div class="locked-date">📅 '+todayStr()+' <span class="muted">(today — locked)</span></div>' +
           '<button class="btn" style="margin-top:14px;width:100%" onclick="updateStockPrice()">Save price update 🌤️</button>'
         ) : '<div class="empty-note">Buy a stock first, then come back each day to log its price.</div>') +
       '</div>' +
@@ -1339,17 +1357,23 @@ function postRender(){
       });
       if(dateSet.size===0) dateSet.add(todayStr());
       const dates = Array.from(dateSet).sort();
-      const palette = ['#8a9a6e','#b57b5a','#7a8fae','#b57b9e','#c9a45c','#6fae9d','#a85c4d','#5f8f8f','#9c8a5e','#7a6f9c','#5b8c5a','#a06a3f'];
-      const datasets = state.roster.map((s,i)=>{
-        const d = state.allStudentData[s.id] || freshStudentData();
-        let lastVal = null;
-        const data = dates.map(date=>{
-          const points = d.portfolioHistory.filter(p=>p.date<=date);
-          if(points.length===0) return lastVal;
-          lastVal = points[points.length-1].total;
-          return lastVal;
-        });
-        return { label: s.name, data, borderColor: palette[i%palette.length], backgroundColor:'transparent', tension:0.25, spanGaps:true, pointRadius:1.5 };
+      const total = state.roster.length;
+      const datasets = [];
+      state.roster.forEach((s,i)=>{
+        try{
+          const d = state.allStudentData[s.id] || freshStudentData();
+          let lastVal = null;
+          const data = dates.map(date=>{
+            const points = d.portfolioHistory.filter(p=>p.date<=date);
+            if(points.length===0) return lastVal;
+            lastVal = points[points.length-1].total;
+            return lastVal;
+          });
+          const hue = Math.round((i * 360) / Math.max(total, 1)) % 360;
+          datasets.push({ label: s.name, data, borderColor: 'hsl('+hue+',55%,42%)', backgroundColor:'transparent', tension:0.25, spanGaps:true, pointRadius:1.5 });
+        }catch(e){
+          console.error('Class chart: failed to build series for', s.name, e);
+        }
       });
       drawLine('classChart', dates, datasets, true);
     }catch(e){
