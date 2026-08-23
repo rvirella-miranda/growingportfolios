@@ -297,7 +297,12 @@ let state = {
   teacherStudentData: null,
   editingGradeCell: null,
   pendingConfirm: null,
-  editingStudentPin: null
+  editingStudentPin: null,
+  recordsFilterTicker: '',
+  recordsFilterStart: '',
+  recordsFilterEnd: '',
+  standingsFilterName: '',
+  standingsFilterTicker: ''
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -660,6 +665,31 @@ async function updateStockPrice(){
 function pillClass(type){ return type==='buy'?'buy':(type==='sell'?'sell':'upd'); }
 function pillLabel(type){ return type==='buy'?'BUY':(type==='sell'?'SELL':'PRICE UPDATE'); }
 
+const ANOMALY_THRESHOLD_PCT = 20;
+function computePriceChangeFlags(allTxs){
+  const flags = {};
+  const byTicker = {};
+  allTxs.forEach(tx=>{
+    if(tx.price == null) return;
+    if(!byTicker[tx.ticker]) byTicker[tx.ticker] = [];
+    byTicker[tx.ticker].push(tx);
+  });
+  Object.keys(byTicker).forEach(t=>{
+    const sorted = byTicker[t].slice().sort((a,b)=>{
+      if(a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return (a.createdAt||0) - (b.createdAt||0);
+    });
+    let prevPrice = null;
+    sorted.forEach(tx=>{
+      if(prevPrice != null && prevPrice > 0){
+        flags[tx.id] = ((tx.price - prevPrice) / prevPrice) * 100;
+      }
+      prevPrice = tx.price;
+    });
+  });
+  return flags;
+}
+
 function getTargetData(context){ return context==='teacher' ? state.teacherStudentData : state.studentData; }
 async function saveTargetData(context){
   if(context==='teacher'){
@@ -711,13 +741,20 @@ async function deleteTx(context, txId){
   });
 }
 
-function buildHistoryTable(sd, context, canEdit){
-  const txs = sd.transactions.slice().sort((a,b)=>{
+function buildHistoryTable(sd, context, canEdit, txOverride){
+  const flags = computePriceChangeFlags(sd.transactions);
+  const source = txOverride || sd.transactions;
+  const txs = source.slice().sort((a,b)=>{
     if(a.date !== b.date) return a.date < b.date ? 1 : -1;
     return (b.createdAt||0) - (a.createdAt||0);
   });
-  if(!txs.length) return '<div class="empty-note">No activity logged yet.</div>';
+  if(!txs.length) return '<div class="empty-note">No matching activity.</div>';
   const rows = txs.map(tx=>{
+    const change = flags[tx.id];
+    const isFlagged = change != null && Math.abs(change) >= ANOMALY_THRESHOLD_PCT;
+    const changeCell = change != null
+      ? '<span'+(isFlagged?' style="color:var(--red);font-weight:800;"':'')+'>'+(change>=0?'+':'')+change.toFixed(1)+'%'+(isFlagged?' ⚠️':'')+'</span>'
+      : '<span class="muted">—</span>';
     if(canEdit && state.editingTxId===tx.id && state.editingContext===context){
       const sharesField = tx.type!=='priceUpdate' ? ('<input type="number" id="editShares-'+tx.id+'" value="'+tx.shares+'" step="any" style="width:70px;">') : '—';
       const feeField = tx.type==='sell' ? ('<input type="number" id="editFee-'+tx.id+'" value="'+tx.fee+'" step="0.01" style="width:80px;">') : '—';
@@ -729,20 +766,21 @@ function buildHistoryTable(sd, context, canEdit){
         '<td><input type="text" id="editName-'+tx.id+'" value="'+esc(tx.name)+'" style="width:120px;"></td>'+
         '<td>'+sharesField+'</td>'+
         '<td><input type="number" id="editPrice-'+tx.id+'" value="'+tx.price+'" step="0.01" style="width:80px;"></td>'+
+        '<td>'+changeCell+'</td>'+
         '<td>'+feeField+'</td>'+
         '<td>'+money(tx.total)+'</td>'+
         '<td style="white-space:nowrap;"><button class="btn small" onclick="saveEditTx(\''+context+'\',\''+tx.id+'\')">Save</button> '+
             '<button class="btn ghost small" onclick="cancelEditTx()">Cancel</button></td>'+
       '</tr>';
     }
-    return '<tr><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+    return '<tr'+(isFlagged?' style="background:var(--clay-pale);"':'')+'><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
       '<td><strong>'+esc(tx.ticker)+'</strong></td><td>'+esc(tx.name)+'</td>'+
-      '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td>'+
+      '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+changeCell+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td>'+
       (canEdit ? ('<td style="white-space:nowrap;"><button class="btn ghost small" onclick="startEditTx(\''+context+'\',\''+tx.id+'\')">Edit</button> '+
                  '<button class="btn danger small" onclick="deleteTx(\''+context+'\',\''+tx.id+'\')">Delete</button></td>') : '<td></td>') +
     '</tr>';
   }).join('');
-  return '<table><thead><tr><th>Date</th><th>Time</th><th>Type</th><th>Ticker</th><th>Name</th><th>Shares</th><th>Price</th><th>Fee</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+  return '<table><thead><tr><th>Date</th><th>Time</th><th>Type</th><th>Ticker</th><th>Name</th><th>Shares</th><th>Price</th><th>Change</th><th>Fee</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
 
@@ -805,6 +843,7 @@ async function loadAllStudentData(){
 async function teacherSelectStudent(id){
   state.teacherSelectedStudentId = id || null;
   state.editingTxId = null; state.editingContext = null;
+  state.recordsFilterTicker = ''; state.recordsFilterStart = ''; state.recordsFilterEnd = '';
   if(id){
     const d = await loadShared('student:'+id, null) || freshStudentData();
     recomputeStudent(d);
@@ -812,6 +851,34 @@ async function teacherSelectStudent(id){
   } else {
     state.teacherStudentData = null;
   }
+  render();
+}
+function updateRecordsFilter(field, value){
+  if(field==='ticker') state.recordsFilterTicker = value;
+  else if(field==='start') state.recordsFilterStart = value;
+  else if(field==='end') state.recordsFilterEnd = value;
+  render();
+}
+function clearRecordsFilter(){
+  state.recordsFilterTicker = ''; state.recordsFilterStart = ''; state.recordsFilterEnd = '';
+  render();
+}
+function filterTransactions(txs, ticker, start, end){
+  return txs.filter(tx=>{
+    if(ticker && tx.ticker !== ticker) return false;
+    if(start && tx.date < start) return false;
+    if(end && tx.date > end) return false;
+    return true;
+  });
+}
+
+function updateStandingsFilter(field, value){
+  if(field==='name') state.standingsFilterName = value;
+  else if(field==='ticker') state.standingsFilterTicker = value;
+  render();
+}
+function clearStandingsFilter(){
+  state.standingsFilterName = ''; state.standingsFilterTicker = '';
   render();
 }
 
@@ -1096,7 +1163,17 @@ function studentTotals(id){
 }
 
 function buildClassPerformance(isTeacher){
-  const rows = state.roster.map(s=>{
+  const nameFilter = (isTeacher ? state.standingsFilterName : '').trim().toLowerCase();
+  const tickerFilter = isTeacher ? state.standingsFilterTicker : '';
+
+  const rows = state.roster.filter(s=>{
+    if(nameFilter && !s.name.toLowerCase().includes(nameFilter)) return false;
+    if(tickerFilter){
+      const d = state.allStudentData[s.id];
+      if(!d || !d.holdings || !d.holdings[tickerFilter]) return false;
+    }
+    return true;
+  }).map(s=>{
     const stt = studentTotals(s.id);
     const holdingsRows = Object.entries(stt.data.holdings).map(([ticker,h])=>{
       const mval = h.shares*h.currentPrice;
@@ -1111,6 +1188,32 @@ function buildClassPerformance(isTeacher){
       '<td><details><summary>View holdings</summary>'+holdingsTable+'</details></td></tr>'
     );
   }).join('');
+
+  // Build ticker filter options from every student's current holdings (need a full pass, not just the filtered set)
+  const tickerOptionsSet = new Set();
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(d && d.holdings) Object.keys(d.holdings).forEach(t=>tickerOptionsSet.add(t));
+  });
+  const tickerOptions = Array.from(tickerOptionsSet).sort();
+
+  const filterUI = isTeacher ? (
+    '<div class="card dashed" style="margin-bottom:16px;">' +
+      '<div class="field-row">' +
+        '<div><label>Search by student name</label><input type="text" value="'+esc(state.standingsFilterName)+'" placeholder="e.g. Jordan" oninput="updateStandingsFilter(\'name\', this.value)"></div>' +
+        '<div><label>Currently holding ticker</label><select onchange="updateStandingsFilter(\'ticker\', this.value)">' +
+          '<option value="">Any stock</option>' +
+          tickerOptions.map(t=>'<option value="'+t+'" '+(state.standingsFilterTicker===t?'selected':'')+'>'+t+'</option>').join('') +
+        '</select></div>' +
+      '</div>' +
+      ((state.standingsFilterName || state.standingsFilterTicker) ? '<button class="btn ghost small" style="margin-top:10px;" onclick="clearStandingsFilter()">Clear filters</button>' : '') +
+    '</div>'
+  ) : '';
+
+  const emptyMessage = state.roster.length
+    ? (rows ? '' : '<div class="empty-note">No students match this filter.</div>')
+    : '<div class="empty-note">No students on the roster yet.</div>';
+
   return (
     '<div class="card" style="margin-bottom:18px;">' +
       '<h3>🏫 Class portfolio value over time</h3>' +
@@ -1119,8 +1222,9 @@ function buildClassPerformance(isTeacher){
     '</div>' +
     '<div class="card">' +
       '<h3>📊 Class standings</h3>' +
-      (state.roster.length ? '<table><thead><tr><th>Student</th><th>Cash</th><th>Holdings Value</th><th>Total Portfolio</th><th>Gain / Loss</th><th>Details</th></tr></thead><tbody>'+rows+'</tbody></table>'
-        : '<div class="empty-note">No students on the roster yet.</div>') +
+      filterUI +
+      (rows ? '<table><thead><tr><th>Student</th><th>Cash</th><th>Holdings Value</th><th>Total Portfolio</th><th>Gain / Loss</th><th>Details</th></tr></thead><tbody>'+rows+'</tbody></table>'
+        : emptyMessage) +
     '</div>'
   );
 }
@@ -1243,14 +1347,31 @@ function buildTeacherRecords(){
     const sd = state.teacherStudentData;
     const hv = holdingsValue(sd.holdings);
     const total = sd.cash + hv;
+    const tickers = Array.from(new Set(sd.transactions.map(tx=>tx.ticker))).sort();
+    const tickerOptions = '<option value="">All tickers</option>' +
+      tickers.map(t=>'<option value="'+t+'" '+(state.recordsFilterTicker===t?'selected':'')+'>'+t+'</option>').join('');
+    const filteredTxs = filterTransactions(sd.transactions, state.recordsFilterTicker, state.recordsFilterStart, state.recordsFilterEnd);
+    const activeFilters = state.recordsFilterTicker || state.recordsFilterStart || state.recordsFilterEnd;
     detail = (
       '<div class="grid grid-3" style="margin-bottom:16px;">' +
         '<div class="card stat-card"><div class="label">Cash</div><div class="value">'+money(sd.cash)+'</div></div>' +
         '<div class="card stat-card"><div class="label">Holdings value</div><div class="value">'+money(hv)+'</div></div>' +
         '<div class="card stat-card"><div class="label">Total portfolio</div><div class="value">'+money(total)+'</div></div>' +
       '</div>' +
+      '<div class="card dashed" style="margin-bottom:16px;">' +
+        '<div class="field-row">' +
+          '<div><label>Filter by ticker</label><select onchange="updateRecordsFilter(\'ticker\', this.value)">'+tickerOptions+'</select></div>' +
+          '<div></div>' +
+        '</div>' +
+        '<div class="field-row">' +
+          '<div><label>From date</label><input type="date" value="'+esc(state.recordsFilterStart)+'" onchange="updateRecordsFilter(\'start\', this.value)"></div>' +
+          '<div><label>To date</label><input type="date" value="'+esc(state.recordsFilterEnd)+'" onchange="updateRecordsFilter(\'end\', this.value)"></div>' +
+        '</div>' +
+        (activeFilters ? '<button class="btn ghost small" style="margin-top:10px;" onclick="clearRecordsFilter()">Clear filters</button>' : '') +
+        '<div class="small-note" style="margin-top:8px;">Rows highlighted in orange had a price move '+ANOMALY_THRESHOLD_PCT+'% or more from that stock\'s last logged price — worth a second look, not necessarily wrong.</div>' +
+      '</div>' +
       '<div class="small-note" style="margin-bottom:8px;">Editing or deleting an entry below recalculates this student\'s cash, holdings, and every chart automatically.</div>' +
-      '<div style="overflow-x:auto;">' + buildHistoryTable(sd, 'teacher', true) + '</div>'
+      '<div style="overflow-x:auto;">' + buildHistoryTable(sd, 'teacher', true, filteredTxs) + '</div>'
     );
   }
   return (
