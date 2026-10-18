@@ -302,7 +302,9 @@ let state = {
   recordsFilterStart: '',
   recordsFilterEnd: '',
   standingsFilterName: '',
-  standingsFilterTicker: ''
+  standingsFilterTicker: '',
+  livePrices: null,
+  finnhubKeyMem: ''
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -761,7 +763,7 @@ function buildHistoryTable(sd, context, canEdit, txOverride){
       return '<tr>'+
         '<td><input type="date" id="editDate-'+tx.id+'" value="'+tx.date+'" style="width:135px;"></td>'+
         '<td class="muted">'+timeStr(tx.createdAt)+'</td>'+
-        '<td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+        '<td><span class="pill '+pillClass(tx.type)+'">'+txLabel(tx)+'</span></td>'+
         '<td><input type="text" id="editTicker-'+tx.id+'" value="'+esc(tx.ticker)+'" style="width:65px;text-transform:uppercase;"></td>'+
         '<td><input type="text" id="editName-'+tx.id+'" value="'+esc(tx.name)+'" style="width:120px;"></td>'+
         '<td>'+sharesField+'</td>'+
@@ -773,7 +775,7 @@ function buildHistoryTable(sd, context, canEdit, txOverride){
             '<button class="btn ghost small" onclick="cancelEditTx()">Cancel</button></td>'+
       '</tr>';
     }
-    return '<tr'+(isFlagged?' style="background:var(--clay-pale);"':'')+'><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass(tx.type)+'">'+pillLabel(tx.type)+'</span></td>'+
+    return '<tr'+(isFlagged?' style="background:var(--clay-pale);"':'')+'><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass(tx.type)+'">'+txLabel(tx)+'</span></td>'+
       '<td><strong>'+esc(tx.ticker)+'</strong></td><td>'+esc(tx.name)+'</td>'+
       '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+changeCell+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td>'+
       (canEdit ? ('<td style="white-space:nowrap;"><button class="btn ghost small" onclick="startEditTx(\''+context+'\',\''+tx.id+'\')">Edit</button> '+
@@ -893,7 +895,7 @@ function goStudentTab(tab){
 function goTeacherTab(tab){
   state.teacherTab = tab;
   state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
-  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard'){ loadAllStudentData().then(render); }
+  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices'){ loadAllStudentData().then(render); }
   else render();
 }
 function setLeaderboardSort(mode){
@@ -1041,7 +1043,7 @@ function buildTrade(){
     return (b.createdAt||0) - (a.createdAt||0);
   }).slice(0,12).map(tx=>{
     const pillClass = tx.type==='buy'?'buy':(tx.type==='sell'?'sell':'upd');
-    const pillLabel = tx.type==='buy'?'BUY':(tx.type==='sell'?'SELL':'PRICE UPDATE');
+    const pillLabel = txLabel(tx);
     return '<tr><td>'+tx.date+'</td><td class="muted">'+timeStr(tx.createdAt)+'</td><td><span class="pill '+pillClass+'">'+pillLabel+'</span></td><td><strong>'+tx.ticker+'</strong></td>'+
       '<td>'+(tx.shares?tx.shares:'—')+'</td><td>'+money(tx.price)+'</td><td>'+(tx.fee?money(tx.fee):'—')+'</td><td>'+(tx.total?money(tx.total):'—')+'</td></tr>';
   }).join('');
@@ -1266,6 +1268,7 @@ function buildTeacherApp(){
   else if(t==='grading') body = buildTeacherGrading();
   else if(t==='records') body = buildTeacherRecords();
   else if(t==='class') body = buildClassPerformance(true);
+  else if(t==='prices') body = buildTeacherPrices();
   else if(t==='leaderboard') body = buildLeaderboard();
   return (
     '<div class="topbar">' +
@@ -1278,6 +1281,7 @@ function buildTeacherApp(){
       tabBtn('records',t,'🛠️ Student Records',"goTeacherTab('records')") +
       tabBtn('class',t,'🏫 Class Performance',"goTeacherTab('class')") +
       tabBtn('leaderboard',t,'🏆 Leaderboard',"goTeacherTab('leaderboard')") +
+      tabBtn('prices',t,'💲 Live Prices',"goTeacherTab('prices')") +
     '</div>' +
     body
   );
@@ -1335,6 +1339,180 @@ function buildTeacherRoster(){
         (rows ? '<table><thead><tr><th>Name</th><th>PIN</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'
               : '<div class="empty-note">No students added yet.</div>') +
       '</div>' +
+    '</div>'
+  );
+}
+
+/* ---------- Live price updates (teacher) ---------- */
+function getFinnhubKey(){
+  if(state.finnhubKeyMem) return state.finnhubKeyMem;
+  try{ return localStorage.getItem('gp_finnhub_key') || ''; }catch(e){ return ''; }
+}
+function saveFinnhubKey(){
+  const k = val('finnhubKeyInput').trim();
+  if(!k){ showToast('Paste your Finnhub API key first.'); return; }
+  state.finnhubKeyMem = k;
+  try{ localStorage.setItem('gp_finnhub_key', k); }catch(e){}
+  showToast('Key saved in this browser only.', 'success');
+  render();
+}
+function clearFinnhubKey(){
+  state.finnhubKeyMem = '';
+  try{ localStorage.removeItem('gp_finnhub_key'); }catch(e){}
+  state.livePrices = null;
+  showToast('Key removed from this browser.', 'success');
+  render();
+}
+function txLabel(tx){
+  if(tx.type === 'priceUpdate' && tx.source === 'teacher') return 'LIVE PRICE';
+  return pillLabel(tx.type);
+}
+function collectHeldTickers(){
+  const map = {};
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.holdings) return;
+    Object.keys(d.holdings).forEach(t=>{
+      if(!map[t]) map[t] = [];
+      map[t].push(d.holdings[t].currentPrice);
+    });
+  });
+  return map;
+}
+async function fetchOneQuote(ticker, key){
+  try{
+    const res = await fetch('https://finnhub.io/api/v1/quote?symbol=' + encodeURIComponent(ticker) + '&token=' + encodeURIComponent(key));
+    if(res.status === 401) return {status:'badkey'};
+    if(res.status === 403) return {status:'notcovered'};
+    if(res.status === 429) return {status:'ratelimit'};
+    if(!res.ok) return {status:'error'};
+    const data = await res.json();
+    if(data && typeof data.c === 'number' && data.c > 0) return {status:'ok', price: data.c};
+    return {status:'notfound'};
+  }catch(e){
+    return {status:'network'};
+  }
+}
+async function fetchLivePrices(){
+  const key = getFinnhubKey();
+  if(!key){ showToast('Save your Finnhub API key first.'); return; }
+  state.livePrices = {loading: true, results: {}, fetchedAt: null};
+  render();
+  await loadAllStudentData();
+  const tickers = Object.keys(collectHeldTickers());
+  if(!tickers.length){
+    state.livePrices = null;
+    showToast('No student currently holds any stocks.');
+    render();
+    return;
+  }
+  const results = {};
+  for(let i = 0; i < tickers.length; i += 10){
+    const chunk = tickers.slice(i, i + 10);
+    await Promise.all(chunk.map(async t=>{ results[t] = await fetchOneQuote(t, key); }));
+    if(i + 10 < tickers.length) await new Promise(r=>setTimeout(r, 1200));
+  }
+  state.livePrices = {loading: false, results, fetchedAt: Date.now()};
+  render();
+}
+async function applyLivePrices(){
+  const lp = state.livePrices;
+  if(!lp || !lp.results) return;
+  const okCount = Object.keys(lp.results).filter(t=>lp.results[t].status === 'ok').length;
+  if(!okCount){ showToast('No prices were fetched successfully.'); return; }
+  askConfirm('Add the fetched price to every student account that holds these stocks? Each change is logged as a LIVE PRICE entry in their history.', async ()=>{
+    let studentsUpdated = 0, entriesAdded = 0;
+    let seq = Date.now();
+    await Promise.all(state.roster.map(async s=>{
+      const d = await loadShared('student:' + s.id, null);
+      if(!d) return;
+      recomputeStudent(d);
+      let changed = false;
+      Object.keys(d.holdings).forEach(t=>{
+        const r = lp.results[t];
+        const h = d.holdings[t];
+        if(r && r.status === 'ok' && Math.abs(h.currentPrice - r.price) >= 0.005){
+          d.transactions.push({id: uid(), date: todayStr(), type: 'priceUpdate', ticker: t, name: h.name, shares: 0, price: r.price, fee: 0, total: 0, createdAt: seq++, source: 'teacher'});
+          entriesAdded++;
+          changed = true;
+        }
+      });
+      if(changed){
+        recomputeStudent(d);
+        await saveShared('student:' + s.id, d);
+        state.allStudentData[s.id] = d;
+        studentsUpdated++;
+      }
+    }));
+    showToast('Updated ' + studentsUpdated + ' student account(s) with ' + entriesAdded + ' price entr' + (entriesAdded === 1 ? 'y' : 'ies') + '.', 'success');
+    render();
+  });
+}
+function buildTeacherPrices(){
+  const key = getFinnhubKey();
+  const lp = state.livePrices;
+  const keyCard = (
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">💲</div>' +
+      '<h3>Live price lookup</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">Uses a free Finnhub account (finnhub.io/register, no credit card). Paste your key below. It is stored only in this browser, never in the shared database or the site code.</div>' +
+      (key
+        ? '<div>🔑 Key saved in this browser. <button class="btn ghost small" onclick="clearFinnhubKey()">Remove key</button></div>'
+        : '<label>Finnhub API key</label><input type="password" id="finnhubKeyInput" placeholder="Paste your key"><button class="btn clay" style="margin-top:12px;" onclick="saveFinnhubKey()">Save key</button>') +
+    '</div>'
+  );
+  if(!key) return keyCard;
+
+  const held = collectHeldTickers();
+  const tickers = Object.keys(held).sort();
+  const statusText = {
+    ok: '✅ Found',
+    notfound: 'Not found (check the ticker)',
+    notcovered: 'Not covered on the free plan',
+    badkey: 'Key was rejected',
+    ratelimit: 'Rate limit hit, try again in a minute',
+    network: 'Could not reach Finnhub',
+    error: 'Error'
+  };
+  let resultsHtml = '';
+  if(lp && lp.loading){
+    resultsHtml = '<div class="empty-note">Fetching prices...</div>';
+  } else if(lp && lp.results){
+    const statuses = Object.keys(lp.results).map(t=>lp.results[t].status);
+    const allNetwork = statuses.length > 0 && statuses.every(x=>x === 'network');
+    const okCount = statuses.filter(x=>x === 'ok').length;
+    const rows = tickers.map(t=>{
+      const r = lp.results[t] || {status: 'error'};
+      const prices = held[t];
+      const lo = Math.min.apply(null, prices), hi = Math.max.apply(null, prices);
+      const studentPrices = (lo === hi) ? money(lo) : (money(lo) + ' - ' + money(hi));
+      let live = '<span class="muted">-</span>';
+      let diff = '<span class="muted">' + (statusText[r.status] || 'Error') + '</span>';
+      if(r.status === 'ok'){
+        live = '<strong>' + money(r.price) + '</strong>';
+        const maxDiff = Math.max.apply(null, prices.map(p=>Math.abs(p - r.price) / r.price * 100));
+        const flagged = maxDiff >= ANOMALY_THRESHOLD_PCT;
+        diff = '<span' + (flagged ? ' style="color:var(--red);font-weight:800;"' : '') + '>' + maxDiff.toFixed(1) + '% off' + (flagged ? ' ⚠️' : '') + '</span>';
+      }
+      return '<tr><td><strong>' + esc(t) + '</strong></td><td>' + prices.length + '</td><td>' + studentPrices + '</td><td>' + live + '</td><td>' + diff + '</td></tr>';
+    }).join('');
+    resultsHtml = (
+      (allNetwork ? '<div class="error-inline" style="margin-bottom:10px;">Could not connect to Finnhub from this page. This can happen if the school network or the browser blocks the request. Tell Claude what you see and we can try a different approach.</div>' : '') +
+      '<div class="small-note" style="margin-bottom:8px;">Fetched at ' + timeStr(lp.fetchedAt) + '. Review the numbers, then apply. Stocks marked not found are left untouched. The "off by" column shows how far the furthest student-entered price is from the live price.</div>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Ticker</th><th>Students holding</th><th>Student-entered price</th><th>Live price</th><th>Check</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      (okCount ? '<button class="btn" style="margin-top:14px;" onclick="applyLivePrices()">Apply to all students (' + okCount + ' stock' + (okCount === 1 ? '' : 's') + ')</button>' : '')
+    );
+  } else if(!tickers.length){
+    resultsHtml = '<div class="empty-note">No student holds any stocks yet.</div>';
+  } else {
+    resultsHtml = '<div class="empty-note">' + tickers.length + ' stock' + (tickers.length === 1 ? ' is' : 's are') + ' currently held across the class. Click the button to look up live prices.</div>';
+  }
+  return (
+    keyCard +
+    '<div class="card">' +
+      '<div class="flex-between"><h3>Latest prices</h3>' +
+      '<button class="btn clay" onclick="fetchLivePrices()"' + ((lp && lp.loading) ? ' disabled' : '') + '>Fetch latest prices</button></div>' +
+      resultsHtml +
     '</div>'
   );
 }
@@ -1425,7 +1603,7 @@ function buildTeacherGrading(){
   const periodCards = state.gradePeriods.map(p=>{
     const studentRows = state.roster.map(s=>{
       const d = state.allStudentData[s.id] || freshStudentData();
-      const updates = d.transactions.filter(tx=>tx.type==='priceUpdate' && tx.date>=p.start && tx.date<=p.end).length;
+      const updates = d.transactions.filter(tx=>tx.type==='priceUpdate' && tx.source!=='teacher' && tx.date>=p.start && tx.date<=p.end).length;
       const existing = (state.grades[s.id] && state.grades[s.id][p.id]) || {grade:'', note:''};
       return (
         '<tr><td><strong>'+esc(s.name)+'</strong></td><td>'+updates+' update'+(updates===1?'':'s')+'</td>' +
