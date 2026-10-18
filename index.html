@@ -1394,10 +1394,24 @@ async function fetchOneQuote(ticker, key){
     return {status:'network'};
   }
 }
+function sleepMs(ms){ return new Promise(r=>setTimeout(r, ms)); }
+async function waitForSlot(onWait){
+  const LIMIT = 50, WINDOW = 60000;
+  if(!state.liveCallTimes) state.liveCallTimes = [];
+  const times = state.liveCallTimes;
+  for(;;){
+    const now = Date.now();
+    while(times.length && now - times[0] > WINDOW) times.shift();
+    if(times.length < LIMIT){ times.push(now); if(onWait) onWait(false); return; }
+    if(onWait) onWait(true);
+    await sleepMs(WINDOW - (now - times[0]) + 250);
+  }
+}
 async function fetchLivePrices(){
   const key = getFinnhubKey();
   if(!key){ showToast('Save your Finnhub API key first.'); return; }
-  state.livePrices = {loading: true, results: {}, fetchedAt: null};
+  if(state.livePrices && state.livePrices.loading) return;
+  state.livePrices = {loading: true, results: {}, fetchedAt: null, done: 0, total: 0, waiting: false};
   render();
   await loadAllStudentData();
   const tickers = Object.keys(collectHeldTickers());
@@ -1407,11 +1421,28 @@ async function fetchLivePrices(){
     render();
     return;
   }
+  const lp = state.livePrices;
+  lp.total = tickers.length;
+  render();
   const results = {};
-  for(let i = 0; i < tickers.length; i += 10){
-    const chunk = tickers.slice(i, i + 10);
-    await Promise.all(chunk.map(async t=>{ results[t] = await fetchOneQuote(t, key); }));
-    if(i + 10 < tickers.length) await new Promise(r=>setTimeout(r, 1200));
+  const onWait = w=>{ if(lp.waiting !== w){ lp.waiting = w; render(); } };
+  for(let i = 0; i < tickers.length; i += 5){
+    const chunk = tickers.slice(i, i + 5);
+    await Promise.all(chunk.map(async t=>{
+      await waitForSlot(onWait);
+      let r = await fetchOneQuote(t, key);
+      let tries = 0;
+      while(r.status === 'ratelimit' && tries < 2){
+        onWait(true);
+        await sleepMs(30000);
+        await waitForSlot(onWait);
+        r = await fetchOneQuote(t, key);
+        tries++;
+      }
+      results[t] = r;
+      lp.done++;
+    }));
+    render();
   }
   state.livePrices = {loading: false, results, fetchedAt: Date.now()};
   render();
@@ -1496,7 +1527,8 @@ function buildTeacherPrices(){
   };
   let resultsHtml = '';
   if(lp && lp.loading){
-    resultsHtml = '<div class="empty-note">Fetching prices...</div>';
+    resultsHtml = '<div class="empty-note">Fetching prices...' + (lp.total ? ' ' + lp.done + ' of ' + lp.total + ' stocks checked.' : '') +
+      (lp.waiting ? '<br>Pausing briefly to stay within the free limit. It continues on its own, so please keep this page open.' : '') + '</div>';
   } else if(lp && lp.results){
     const statuses = Object.keys(lp.results).map(t=>lp.results[t].status);
     const allNetwork = statuses.length > 0 && statuses.every(x=>x === 'network');
@@ -1537,7 +1569,8 @@ function buildTeacherPrices(){
   } else if(!tickers.length){
     resultsHtml = '<div class="empty-note">No student holds any stocks yet.</div>';
   } else {
-    resultsHtml = '<div class="empty-note">' + tickers.length + ' stock' + (tickers.length === 1 ? ' is' : 's are') + ' currently held across the class. Click the button to look up live prices.</div>';
+    resultsHtml = '<div class="empty-note">' + tickers.length + ' stock' + (tickers.length === 1 ? ' is' : 's are') + ' currently held across the class. Click the button to look up live prices.' +
+      (tickers.length > 50 ? '<br>The free plan allows about 50 lookups a minute, so this will take roughly ' + Math.ceil((tickers.length - 50) / 50) + ' extra minute(s). The app paces itself, just keep this page open.' : '') + '</div>';
   }
   return (
     keyCard +
