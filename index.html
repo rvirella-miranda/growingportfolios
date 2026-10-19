@@ -305,7 +305,8 @@ let state = {
   standingsFilterTicker: '',
   livePrices: null,
   finnhubKeyMem: '',
-  livePriceTolerance: 5
+  livePriceTolerance: 5,
+  liveSelected: {}
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -1445,6 +1446,41 @@ async function fetchLivePrices(){
     render();
   }
   state.livePrices = {loading: false, results, fetchedAt: Date.now()};
+  state.liveSelected = {};
+  liveStudentSummary().forEach(x=>{ state.liveSelected[x.id] = true; });
+  render();
+}
+function liveStudentSummary(){
+  const lp = state.livePrices;
+  if(!lp || !lp.results) return [];
+  const tol = state.livePriceTolerance;
+  const out = [];
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.holdings) return;
+    const items = [];
+    Object.keys(d.holdings).forEach(t=>{
+      const r = lp.results[t];
+      if(r && r.status === 'ok'){
+        const price = d.holdings[t].currentPrice;
+        items.push({ticker: t, price: price, pct: (price - r.price) / r.price * 100});
+      }
+    });
+    if(!items.length) return;
+    out.push({id: s.id, name: s.name, total: items.length, off: items.filter(x=>Math.abs(x.pct) > tol)});
+  });
+  return out;
+}
+function toggleLiveStudent(id, checked){
+  state.liveSelected[id] = !!checked;
+  render();
+}
+function selectLiveStudents(mode){
+  const sel = {};
+  liveStudentSummary().forEach(x=>{
+    sel[x.id] = (mode === 'all') ? true : (mode === 'off' ? x.off.length > 0 : false);
+  });
+  state.liveSelected = sel;
   render();
 }
 async function applyLivePrices(){
@@ -1452,10 +1488,13 @@ async function applyLivePrices(){
   if(!lp || !lp.results) return;
   const okCount = Object.keys(lp.results).filter(t=>lp.results[t].status === 'ok').length;
   if(!okCount){ showToast('No prices were fetched successfully.'); return; }
-  askConfirm('Add the fetched price to every student account that holds these stocks? Each change is logged as a LIVE PRICE entry in their history.', async ()=>{
+  const ids = liveStudentSummary().filter(x=>state.liveSelected[x.id] !== false).map(x=>x.id);
+  if(!ids.length){ showToast('Select at least one student first.'); return; }
+  askConfirm('Add the fetched prices to ' + ids.length + ' selected student account' + (ids.length === 1 ? '' : 's') + '? Each change is logged as a LIVE PRICE entry in their history. Students you did not select are left untouched.', async ()=>{
     let studentsUpdated = 0, entriesAdded = 0;
     let seq = Date.now();
-    await Promise.all(state.roster.map(async s=>{
+    const targets = state.roster.filter(s=>ids.indexOf(s.id) !== -1);
+    await Promise.all(targets.map(async s=>{
       const d = await loadShared('student:' + s.id, null);
       if(!d) return;
       recomputeStudent(d);
@@ -1479,6 +1518,33 @@ async function applyLivePrices(){
     showToast('Updated ' + studentsUpdated + ' student account(s) with ' + entriesAdded + ' price entr' + (entriesAdded === 1 ? 'y' : 'ies') + '.', 'success');
     render();
   });
+}
+function buildLiveApplyPanel(){
+  const list = liveStudentSummary().slice().sort((a,b)=>(b.off.length - a.off.length) || a.name.localeCompare(b.name));
+  const selectedCount = list.filter(x=>state.liveSelected[x.id] !== false).length;
+  const boxes = list.map(x=>{
+    const checked = state.liveSelected[x.id] !== false;
+    const note = x.off.length
+      ? '<span style="color:var(--red);">' + x.off.length + ' of ' + x.total + ' stock' + (x.total === 1 ? '' : 's') + ' off</span>'
+      : '<span class="muted">all close</span>';
+    return '<label style="display:flex;align-items:center;gap:8px;margin:0;font-size:0.9rem;font-weight:600;color:var(--ink);">' +
+      '<input type="checkbox" style="width:auto;" data-id="' + esc(x.id) + '" onchange="toggleLiveStudent(this.dataset.id, this.checked)"' + (checked ? ' checked' : '') + '> ' +
+      esc(x.name) + ' ' + note + '</label>';
+  }).join('');
+  return (
+    '<div class="small-note" style="margin-top:12px;">Want students to fix their own prices? You do not need to apply anything. Ask them to update, then click Fetch latest prices again to re-check. To apply live prices, choose the students below.</div>' +
+    '<div class="card dashed" style="margin-top:12px;">' +
+      '<h4>Apply to which students?</h4>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 12px;">' +
+        '<button class="btn ghost small" data-mode="all" onclick="selectLiveStudents(this.dataset.mode)">Select all</button>' +
+        '<button class="btn ghost small" data-mode="none" onclick="selectLiveStudents(this.dataset.mode)">Select none</button>' +
+        '<button class="btn ghost small" data-mode="off" onclick="selectLiveStudents(this.dataset.mode)">Only students who are off</button>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px 16px;">' + boxes + '</div>' +
+      '<div class="small-note" style="margin-top:10px;">Only stocks a student currently holds are updated. Students you leave unchecked are not touched at all.</div>' +
+      '<button class="btn" style="margin-top:12px;" onclick="applyLivePrices()"' + (selectedCount ? '' : ' disabled') + '>Apply live prices to ' + selectedCount + ' selected student' + (selectedCount === 1 ? '' : 's') + '</button>' +
+    '</div>'
+  );
 }
 function collectHeldByStudent(){
   const map = {};
@@ -1564,7 +1630,7 @@ function buildTeacherPrices(){
       '<div style="margin-bottom:10px;"><label style="display:inline;">Flag a student if their price is off by more than</label> <input type="number" min="0" step="0.5" value="' + tol + '" onchange="setLiveTolerance(this.value)" style="width:80px;display:inline-block;"> %</div>' +
       '<div class="small-note" style="margin-bottom:8px;">Fetched at ' + timeStr(lp.fetchedAt) + '. Under each stock you will see the students whose entered price differs from the live price by more than the setting above (plus means higher than live, minus means lower). Stocks marked not found are left untouched.' + (okCount ? ' Total flagged entries: ' + totalOff + '.' : '') + '</div>' +
       '<div style="overflow-x:auto;"><table><thead><tr><th>Ticker</th><th>Students holding</th><th>Student-entered price</th><th>Live price</th><th>Students to follow up with</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-      (okCount ? '<div class="small-note" style="margin-top:12px;">Want students to fix their own prices? You do not need to apply anything. Ask them to update, then click Fetch latest prices again to re-check.</div><button class="btn" style="margin-top:10px;" onclick="applyLivePrices()">Apply live prices to all students (' + okCount + ' stock' + (okCount === 1 ? '' : 's') + ')</button>' : '')
+      (okCount ? buildLiveApplyPanel() : '')
     );
   } else if(!tickers.length){
     resultsHtml = '<div class="empty-note">No student holds any stocks yet.</div>';
