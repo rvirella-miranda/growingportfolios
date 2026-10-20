@@ -306,7 +306,10 @@ let state = {
   livePrices: null,
   finnhubKeyMem: '',
   livePriceTolerance: 5,
-  liveSelected: {}
+  liveSelected: {},
+  recordsView: 'student',
+  tickerSelected: '',
+  tickerFixSel: {}
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -897,7 +900,7 @@ function goStudentTab(tab){
 function goTeacherTab(tab){
   state.teacherTab = tab;
   state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
-  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices'){ loadAllStudentData().then(render); }
+  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
   else render();
 }
 function setLeaderboardSort(mode){
@@ -1648,7 +1651,189 @@ function buildTeacherPrices(){
   );
 }
 
+/* ---------- Class-wide ticker view (teacher) ---------- */
+function setRecordsView(mode){
+  state.recordsView = (mode === 'ticker') ? 'ticker' : 'student';
+  state.editingTxId = null; state.editingContext = null;
+  if(state.recordsView === 'ticker'){ loadAllStudentData().then(render); }
+  else render();
+}
+function selectTickerView(t){
+  state.tickerSelected = t || '';
+  state.tickerFixSel = {};
+  render();
+}
+function toggleTickerStudent(id, checked){
+  state.tickerFixSel[id] = !!checked;
+}
+function setTickerFixAll(checked){
+  document.querySelectorAll('input[data-fixsel]').forEach(el=>{
+    el.checked = checked;
+    state.tickerFixSel[el.dataset.id] = checked;
+  });
+}
+async function openStudentRecord(id, ticker){
+  state.recordsView = 'student';
+  await teacherSelectStudent(id);
+  state.recordsFilterTicker = ticker;
+  render();
+}
+function computeClassTickers(){
+  const map = {};
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.transactions) return;
+    d.transactions.forEach(tx=>{
+      const t = tx.ticker;
+      if(!map[t]) map[t] = {ticker: t, students: new Set(), entries: 0, names: {}, held: new Set(), lo: Infinity, hi: -Infinity};
+      const m = map[t];
+      m.students.add(s.id);
+      m.entries++;
+      const nm = (tx.name || '').trim();
+      if(nm && !m.names[nm.toLowerCase()]) m.names[nm.toLowerCase()] = nm;
+      if(typeof tx.price === 'number'){ m.lo = Math.min(m.lo, tx.price); m.hi = Math.max(m.hi, tx.price); }
+    });
+    Object.keys(d.holdings || {}).forEach(t=>{ if(map[t]) map[t].held.add(s.id); });
+  });
+  const byName = {};
+  Object.keys(map).forEach(t=>{
+    Object.keys(map[t].names).forEach(n=>{
+      if(!byName[n]) byName[n] = [];
+      byName[n].push(t);
+    });
+  });
+  return Object.keys(map).map(t=>{
+    const m = map[t];
+    const others = {};
+    Object.keys(m.names).forEach(n=>{ byName[n].forEach(o=>{ if(o !== t) others[o] = true; }); });
+    return {
+      ticker: t, students: m.students.size, entries: m.entries, held: m.held.size,
+      names: Object.keys(m.names).map(n=>m.names[n]), lo: m.lo, hi: m.hi,
+      sameNameElsewhere: Object.keys(others).sort()
+    };
+  }).sort((a,b)=>a.ticker.localeCompare(b.ticker));
+}
+async function applyTickerFix(){
+  const oldT = state.tickerSelected;
+  if(!oldT) return;
+  const newT = val('fixTickerNew').trim().toUpperCase();
+  const newName = val('fixTickerName').trim();
+  if(!newT && !newName){ showToast('Enter a corrected ticker, a corrected name, or both.'); return; }
+  if(newT === oldT && !newName){ showToast('That is the same ticker. Enter a different one or a corrected name.'); return; }
+  const targetT = newT || oldT;
+  const ids = state.roster.filter(s=>{
+    const d = state.allStudentData[s.id];
+    return d && d.transactions && d.transactions.some(tx=>tx.ticker === oldT) && state.tickerFixSel[s.id] !== false;
+  }).map(s=>s.id);
+  if(!ids.length){ showToast('Select at least one student first.'); return; }
+  askConfirm('Change ' + oldT + (newT && newT !== oldT ? ' to ' + newT : '') + (newName ? ' and set the stock name to ' + newName : '') + ' for ' + ids.length + ' student' + (ids.length === 1 ? '' : 's') + '? Their cash, holdings, and charts will be recalculated. Students you did not select are left untouched.', async ()=>{
+    let studentsChanged = 0, entriesChanged = 0;
+    await Promise.all(ids.map(async id=>{
+      const d = await loadShared('student:' + id, null);
+      if(!d) return;
+      let n = 0;
+      d.transactions.forEach(tx=>{
+        if(tx.ticker === oldT){
+          tx.ticker = targetT;
+          if(newName) tx.name = newName;
+          n++;
+        }
+      });
+      if(n){
+        recomputeStudent(d);
+        await saveShared('student:' + id, d);
+        state.allStudentData[id] = d;
+        if(state.teacherSelectedStudentId === id) state.teacherStudentData = d;
+        studentsChanged++;
+        entriesChanged += n;
+      }
+    }));
+    state.tickerSelected = targetT;
+    state.tickerFixSel = {};
+    showToast('Updated ' + entriesChanged + ' entr' + (entriesChanged === 1 ? 'y' : 'ies') + ' for ' + studentsChanged + ' student' + (studentsChanged === 1 ? '' : 's') + '.', 'success');
+    render();
+  });
+}
+function buildTickerDetail(t){
+  const rows = [];
+  const students = [];
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.transactions) return;
+    const mine = d.transactions.filter(tx=>tx.ticker === t);
+    if(!mine.length) return;
+    students.push({id: s.id, name: s.name, count: mine.length});
+    mine.slice().sort((a,b)=> (a.date !== b.date) ? (a.date < b.date ? 1 : -1) : ((b.createdAt || 0) - (a.createdAt || 0)))
+      .forEach(tx=>rows.push({s: s, tx: tx}));
+  });
+  const body = rows.map(r=>
+    '<tr><td><strong>' + esc(r.s.name) + '</strong></td><td>' + r.tx.date + '</td><td class="muted">' + timeStr(r.tx.createdAt) + '</td>' +
+    '<td><span class="pill ' + pillClass(r.tx.type) + '">' + txLabel(r.tx) + '</span></td><td>' + esc(r.tx.name) + '</td>' +
+    '<td>' + (r.tx.shares ? r.tx.shares : '—') + '</td><td>' + money(r.tx.price) + '</td>' +
+    '<td><button class="btn ghost small" data-id="' + esc(r.s.id) + '" data-ticker="' + esc(t) + '" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker)">Edit entry</button></td></tr>'
+  ).join('');
+  const boxes = students.map(x=>{
+    const checked = state.tickerFixSel[x.id] !== false;
+    return '<label style="display:flex;align-items:center;gap:8px;margin:0;font-size:0.9rem;font-weight:600;color:var(--ink);">' +
+      '<input type="checkbox" style="width:auto;" data-fixsel="1" data-id="' + esc(x.id) + '" onchange="toggleTickerStudent(this.dataset.id, this.checked)"' + (checked ? ' checked' : '') + '> ' +
+      esc(x.name) + ' <span class="muted">(' + x.count + ' entr' + (x.count === 1 ? 'y' : 'ies') + ')</span></label>';
+  }).join('');
+  return (
+    '<div style="margin-bottom:12px;"><button class="btn ghost small" data-t="" onclick="selectTickerView(this.dataset.t)">← All tickers</button></div>' +
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">🔤</div>' +
+      '<h3>Fix ' + esc(t) + ' for the class</h3>' +
+      '<div class="small-note" style="margin-bottom:6px;">Changes every logged entry for this ticker (buys, sells, and price updates) for the students you check. Cash, holdings, and charts recalculate automatically. If a student already owns the corrected ticker, the two combine into one holding.</div>' +
+      '<div class="field-row">' +
+        '<div><label>Correct ticker (leave blank to keep ' + esc(t) + ')</label><input type="text" id="fixTickerNew" placeholder="e.g. AAPL" style="text-transform:uppercase;"></div>' +
+        '<div><label>Correct stock name (optional)</label><input type="text" id="fixTickerName" placeholder="e.g. Apple"></div>' +
+      '</div>' +
+      '<label>Apply to these students</label>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px;">' +
+        '<button class="btn ghost small" onclick="setTickerFixAll(true)">Select all</button>' +
+        '<button class="btn ghost small" onclick="setTickerFixAll(false)">Select none</button>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 16px;">' + boxes + '</div>' +
+      '<button class="btn clay" style="margin-top:14px;" onclick="applyTickerFix()">Apply fix</button>' +
+    '</div>' +
+    '<div class="card">' +
+      '<h3>All entries for ' + esc(t) + ' across the class</h3>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Student</th><th>Date</th><th>Time</th><th>Type</th><th>Name</th><th>Shares</th><th>Price</th><th></th></tr></thead><tbody>' + body + '</tbody></table></div>' +
+    '</div>'
+  );
+}
+function buildTeacherTickerView(){
+  if(!state.roster.length) return '<div class="card"><div class="empty-note">No students on the roster yet.</div></div>';
+  const list = computeClassTickers();
+  if(!list.length) return '<div class="card"><div class="empty-note">No trades have been logged yet.</div></div>';
+  if(state.tickerSelected && list.some(x=>x.ticker === state.tickerSelected)){
+    return buildTickerDetail(state.tickerSelected);
+  }
+  const rows = list.map(x=>{
+    const flags = [];
+    if(x.names.length > 1) flags.push('different names used');
+    if(x.sameNameElsewhere.length) flags.push('same name as ' + x.sameNameElsewhere.map(esc).join(', '));
+    const check = flags.length ? '<span style="color:var(--red);font-weight:700;">⚠️ ' + flags.join('; ') + '</span>' : '<span class="muted">-</span>';
+    const range = (x.lo === Infinity) ? '-' : (x.lo === x.hi ? money(x.lo) : (money(x.lo) + ' - ' + money(x.hi)));
+    return '<tr><td><strong>' + esc(x.ticker) + '</strong></td><td>' + (x.names.map(esc).join(' / ') || '-') + '</td><td>' + x.students + '</td><td>' + x.held + '</td><td>' + x.entries + '</td><td>' + range + '</td><td>' + check + '</td>' +
+      '<td><button class="btn small" data-ticker="' + esc(x.ticker) + '" onclick="selectTickerView(this.dataset.ticker)">View / fix</button></td></tr>';
+  }).join('');
+  return (
+    '<div class="card">' +
+      '<h3>Every ticker across the class</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">' + list.length + ' different ticker' + (list.length === 1 ? '' : 's') + ' logged. A ⚠️ means the same ticker has more than one stock name, or the same stock name appears under another ticker. Both are common signs of a typo.</div>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Ticker</th><th>Stock name(s)</th><th>Students</th><th>Held now by</th><th>Entries</th><th>Price range</th><th>Check</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '</div>'
+  );
+}
 function buildTeacherRecords(){
+  const toggle = '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">' +
+    '<button class="tab-btn' + (state.recordsView !== 'ticker' ? ' active' : '') + '" data-mode="student" onclick="setRecordsView(this.dataset.mode)">👤 By student</button>' +
+    '<button class="tab-btn' + (state.recordsView === 'ticker' ? ' active' : '') + '" data-mode="ticker" onclick="setRecordsView(this.dataset.mode)">🔤 By ticker (whole class)</button>' +
+  '</div>';
+  return toggle + (state.recordsView === 'ticker' ? buildTeacherTickerView() : buildTeacherRecordsByStudent());
+}
+function buildTeacherRecordsByStudent(){
   const options = '<option value="">— Choose a student —</option>' +
     state.roster.map(s=>'<option value="'+s.id+'" '+(state.teacherSelectedStudentId===s.id?'selected':'')+'>'+esc(s.name)+'</option>').join('');
   let detail = '<div class="empty-note">Pick a student above to view or correct their trades and price updates.</div>';
