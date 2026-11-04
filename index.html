@@ -289,7 +289,7 @@ let state = {
   gradePeriods: [],
   grades: {},
   teacherSetupMode: false,
-  settings: { startingCash: 10000, feePercent: 1, studentsCanEdit: false },
+  settings: { startingCash: 10000, feePercent: 1, studentsCanEdit: false, maxPricePerShare: 100000, maxPriceChangePct: 25 },
   leaderboardSort: 'total',
   editingTxId: null,
   editingContext: null,
@@ -485,7 +485,7 @@ async function init(){
   const [roster, teacherPinValue, settings, gradePeriods, grades] = await Promise.all([
     loadShared('roster', []),
     loadShared('teacherPin', null),
-    loadShared('settings', { startingCash: 10000, feePercent: 1, studentsCanEdit: false }),
+    loadShared('settings', { startingCash: 10000, feePercent: 1, studentsCanEdit: false, maxPricePerShare: 100000, maxPriceChangePct: 25 }),
     loadShared('gradePeriods', []),
     loadShared('grades', {})
   ]);
@@ -545,7 +545,11 @@ async function saveSettings(){
   const studentsCanEdit = document.getElementById('settingStudentsCanEdit') ? document.getElementById('settingStudentsCanEdit').checked : false;
   if(!(cash>0)){ showToast('Enter a starting cash amount greater than 0.'); return; }
   if(!(fee>=0)){ showToast('Enter a fee percentage of 0 or more.'); return; }
-  state.settings = { startingCash: cash, feePercent: fee, studentsCanEdit };
+  const maxPrice = parseFloat(val('settingMaxPrice'));
+  const maxChange = parseFloat(val('settingMaxChange'));
+  if(!(maxPrice>0)){ showToast('Enter a highest price per share greater than 0.'); return; }
+  if(!(maxChange>0)){ showToast('Enter a biggest price change greater than 0.'); return; }
+  state.settings = { startingCash: cash, feePercent: fee, studentsCanEdit, maxPricePerShare: maxPrice, maxPriceChangePct: maxChange };
   await saveShared('settings', state.settings);
   showToast('Settings saved. New students will start with ' + money(cash) + ' and sells will charge a ' + fee + '% fee.', 'success');
   render();
@@ -620,6 +624,149 @@ async function saveStudent(){
   await saveShared('student:' + state.currentStudent.id, state.studentData);
 }
 
+/* ---------- Safeguards: limits and account-integrity checks ---------- */
+const WEALTH_FLAG_MULT = 3;
+function maxPricePerShare(){ const v = Number(state.settings.maxPricePerShare); return (v > 0) ? v : 100000; }
+function maxPriceChangePct(){ const v = Number(state.settings.maxPriceChangePct); return (v > 0) ? v : 25; }
+
+function referencePrice(sd, ticker, onDate, excludeTxId){
+  const mine = sd.transactions
+    .filter(tx=>tx.ticker === ticker && tx.id !== excludeTxId && typeof tx.price === 'number' && tx.price > 0)
+    .sort((a,b)=> (a.date !== b.date) ? (a.date < b.date ? -1 : 1) : ((a.createdAt || 0) - (b.createdAt || 0)));
+  if(!mine.length) return null;
+  const teacherSameDay = mine.filter(tx=>tx.source === 'teacher' && tx.date === onDate);
+  if(teacherSameDay.length) return teacherSameDay[teacherSameDay.length - 1].price;
+  const earlier = mine.filter(tx=>tx.date < onDate);
+  if(earlier.length) return earlier[earlier.length - 1].price;
+  const sameDay = mine.filter(tx=>tx.date === onDate);
+  if(sameDay.length) return sameDay[0].price;
+  const later = mine.filter(tx=>tx.date > onDate);
+  return later.length ? later[0].price : null;
+}
+function checkPriceAllowed(sd, ticker, price, onDate, excludeTxId){
+  if(!(price > 0) || !isFinite(price)) return 'Enter a valid price.';
+  if(price < 0.01) return 'The price must be at least $0.01.';
+  if(price > maxPricePerShare()) return 'That price is above the class limit of ' + money(maxPricePerShare()) + ' per share. If it is real, ask your teacher.';
+  const ref = referencePrice(sd, ticker, onDate, excludeTxId);
+  if(ref != null){
+    const pct = Math.abs(price - ref) / ref * 100;
+    if(pct > maxPriceChangePct()){
+      return 'That price is ' + pct.toFixed(0) + '% away from the last price logged for ' + ticker + ' (' + money(ref) + '). The limit is ' + maxPriceChangePct() + '%. If the new price is real, ask your teacher to apply the live price.';
+    }
+  }
+  return '';
+}
+function findProblems(sd){
+  const start = (sd.startingCash != null) ? sd.startingCash : state.settings.startingCash;
+  const txs = sd.transactions.slice().sort((a,b)=>{
+    if(a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return (a.createdAt || 0) - (b.createdAt || 0);
+  });
+  const out = [];
+  let cash = start;
+  const held = {};
+  txs.forEach(tx=>{
+    if(!(tx.price > 0) || !isFinite(tx.price) || tx.price > maxPricePerShare()) out.push({kind: 'price', txId: tx.id, tx: tx});
+    if(tx.type === 'buy'){
+      const before = cash;
+      cash -= tx.price * tx.shares;
+      held[tx.ticker] = (held[tx.ticker] || 0) + tx.shares;
+      if(cash < -0.005 && before >= -0.005) out.push({kind: 'negcash', txId: tx.id, tx: tx, cash: cash});
+    } else if(tx.type === 'sell'){
+      const have = held[tx.ticker] || 0;
+      if(tx.shares > have + 0.0001) out.push({kind: 'oversell', txId: tx.id, tx: tx, have: have});
+      const gross = tx.price * tx.shares;
+      const fee = (tx.fee != null && !isNaN(tx.fee)) ? tx.fee : 0;
+      cash += gross - fee;
+      held[tx.ticker] = have - tx.shares;
+    }
+  });
+  return out;
+}
+function problemKey(p){ return p.kind + ':' + p.txId; }
+function newProblemsAfter(sd, mutate){
+  const before = {};
+  findProblems(sd).forEach(p=>{ before[problemKey(p)] = true; });
+  const copy = JSON.parse(JSON.stringify(sd));
+  mutate(copy);
+  return findProblems(copy).filter(p=>!before[problemKey(p)]);
+}
+function describeProblem(p){
+  if(p.kind === 'negcash') return 'That change would leave the account with negative cash. Adjust or delete the later entries first.';
+  if(p.kind === 'oversell') return 'That change would sell more shares than were owned at that time. Adjust or delete the later entries first.';
+  return 'That price is outside the allowed range (up to ' + money(maxPricePerShare()) + ' per share).';
+}
+
+/* ---------- Teacher Data Check tab ---------- */
+function describeTxShort(tx){
+  return pillLabel(tx.type) + ' ' + tx.ticker + (tx.shares ? ' ' + tx.shares + ' sh' : '') + ' @ ' + money(tx.price) + ' on ' + tx.date + ' ' + timeStr(tx.createdAt);
+}
+function scanClassIssues(){
+  const out = [];
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.transactions || !d.transactions.length) return;
+    const issues = [];
+    const seen = {};
+    findProblems(d).forEach(p=>{
+      let text;
+      if(p.kind === 'negcash') text = 'Cash goes negative (' + money(p.cash) + ') after this entry';
+      else if(p.kind === 'oversell') text = 'Sells more shares than were owned (owned ' + p.have + ')';
+      else text = 'Price is outside the allowed range';
+      issues.push({text: text, tx: p.tx});
+      seen[p.txId] = true;
+    });
+    if(d.cash < -0.005 && !issues.some(i=>i.text.indexOf('negative') !== -1)) issues.push({text: 'Cash is negative (' + money(d.cash) + ')', tx: null});
+    const flags = computePriceChangeFlags(d.transactions);
+    d.transactions.forEach(tx=>{
+      const pct = flags[tx.id];
+      if(pct != null && tx.source !== 'teacher' && Math.abs(pct) > maxPriceChangePct() && !seen[tx.id]){
+        issues.push({text: 'Price moved ' + (pct >= 0 ? '+' : '') + pct.toFixed(0) + '% from the previous price for ' + tx.ticker, tx: tx});
+      }
+    });
+    const base = (d.startingCash != null) ? d.startingCash : state.settings.startingCash;
+    const total = d.cash + holdingsValue(d.holdings);
+    if(base > 0 && total >= base * WEALTH_FLAG_MULT) issues.push({text: 'Total portfolio is ' + (total / base).toFixed(1) + 'x the starting cash (' + money(total) + ')', tx: null});
+    if(issues.length) out.push({id: s.id, name: s.name, issues: issues});
+  });
+  return out.sort((a,b)=>b.issues.length - a.issues.length);
+}
+async function deleteEntryFromCheck(studentId, txId){
+  askConfirm('Delete this entry from the student account? Cash, holdings, and charts will be recalculated.', async ()=>{
+    const d = await loadShared('student:' + studentId, null);
+    if(!d){ showToast('Could not load that student.'); return; }
+    recomputeStudent(d);
+    const added = newProblemsAfter(d, c=>{ c.transactions = c.transactions.filter(x=>x.id !== txId); });
+    if(added.length){ showToast(describeProblem(added[0])); return; }
+    d.transactions = d.transactions.filter(x=>x.id !== txId);
+    recomputeStudent(d);
+    await saveShared('student:' + studentId, d);
+    state.allStudentData[studentId] = d;
+    if(state.teacherSelectedStudentId === studentId) state.teacherStudentData = d;
+    showToast('Entry deleted.', 'success');
+    render();
+  });
+}
+function buildTeacherCheck(){
+  const list = scanClassIssues();
+  const intro = '<div class="small-note" style="margin-bottom:10px;">Scans every student for impossible or suspicious numbers: negative cash, selling shares that were not owned, prices outside the limits, big price jumps, and portfolios far above the starting cash. The limits are in Simulation settings (Roster tab).</div>';
+  if(!state.roster.length) return '<div class="card"><h3>🛡️ Data check</h3><div class="empty-note">No students on the roster yet.</div></div>';
+  if(!list.length) return '<div class="card"><h3>🛡️ Data check</h3>' + intro + '<div class="empty-note">✅ No problems found in any account.</div></div>';
+  const cards = list.map(s=>{
+    const rows = s.issues.map(i=>{
+      const detail = i.tx ? ('<div class="muted" style="font-size:0.82rem;">' + esc(describeTxShort(i.tx)) + '</div>') : '';
+      const del = i.tx ? ('<button class="btn danger small" data-id="' + esc(s.id) + '" data-tx="' + esc(i.tx.id) + '" onclick="deleteEntryFromCheck(this.dataset.id, this.dataset.tx)">Delete entry</button>') : '';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px dashed var(--line);">' +
+        '<div><div style="color:var(--red);font-weight:700;">⚠️ ' + esc(i.text) + '</div>' + detail + '</div>' + del + '</div>';
+    }).join('');
+    return '<div class="card" style="margin-bottom:14px;">' +
+      '<div class="flex-between"><h4>' + esc(s.name) + ' <span class="muted">(' + s.issues.length + ' issue' + (s.issues.length === 1 ? '' : 's') + ')</span></h4>' +
+      '<button class="btn ghost small" data-id="' + esc(s.id) + '" data-ticker="" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker)">Open record</button></div>' +
+      rows + '</div>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:14px;"><h3>🛡️ Data check</h3>' + intro + '<div><strong>' + list.length + '</strong> student' + (list.length === 1 ? '' : 's') + ' need a look.</div></div>' + cards;
+}
+
 async function buyStock(){
   const name = val('buyName').trim();
   const ticker = val('buyTicker').trim().toUpperCase();
@@ -627,6 +774,8 @@ async function buyStock(){
   const shares = parseFloat(val('buyShares'));
   const date = todayStr();
   if(!name || !ticker || !(price>0) || !(shares>0)){ showToast('Fill in stock name, ticker, price, and shares with valid values.'); return; }
+  const buyMsg = checkPriceAllowed(state.studentData, ticker, price, todayStr(), null);
+  if(buyMsg){ showToast(buyMsg); return; }
   const cost = price*shares;
   if(cost > state.studentData.cash + 0.001){ showToast('Not enough cash — this purchase costs ' + money(cost) + ' but you have ' + money(state.studentData.cash) + '.'); return; }
   state.studentData.transactions.push({id: uid(), date, type:'buy', ticker, name, shares, price, fee:0, total: cost, createdAt: Date.now()});
@@ -643,6 +792,8 @@ async function sellStock(){
   const date = todayStr();
   const h = state.studentData.holdings[ticker];
   if(!h || !(price>0) || !(shares>0)){ showToast('Choose a stock you own and enter a valid price and share count.'); return; }
+  const sellMsg = checkPriceAllowed(state.studentData, ticker, price, todayStr(), null);
+  if(sellMsg){ showToast(sellMsg); return; }
   if(shares > h.shares + 0.0001){ showToast('You only own ' + h.shares + ' shares of ' + ticker + '.'); return; }
   const name = h.name;
   const gross = price*shares;
@@ -661,6 +812,8 @@ async function updateStockPrice(){
   const date = todayStr();
   const h = state.studentData.holdings[ticker];
   if(!h || !(price>0)){ showToast('Choose a stock you hold and enter a valid new price.'); return; }
+  const updMsg = checkPriceAllowed(state.studentData, ticker, price, todayStr(), null);
+  if(updMsg){ showToast(updMsg); return; }
   state.studentData.transactions.push({id: uid(), date, type:'priceUpdate', ticker, name: h.name, shares:0, price, fee:0, total:0, createdAt: Date.now()});
   recomputeStudent(state.studentData);
   await saveStudent();
@@ -732,6 +885,13 @@ async function saveEditTx(context, txId){
     const fee = parseFloat(val('editFee-'+txId));
     fields.fee = (!isNaN(fee) && fee>=0) ? fee : tx.fee;
   }
+  if(context === 'student'){
+    fields.date = tx.date;
+    const editMsg = checkPriceAllowed(sd, ticker, price, tx.date, txId);
+    if(editMsg){ showToast(editMsg); return; }
+  }
+  const addedProblems = newProblemsAfter(sd, c=>{ const t = c.transactions.find(x=>x.id === txId); if(t) Object.assign(t, fields); });
+  if(addedProblems.length){ showToast(describeProblem(addedProblems[0])); return; }
   applyTxEdit(sd, txId, fields);
   await saveTargetData(context);
   state.editingTxId = null; state.editingContext = null;
@@ -741,6 +901,8 @@ async function saveEditTx(context, txId){
 async function deleteTx(context, txId){
   askConfirm('Delete this entry? Cash, holdings, and charts will be recalculated.', async ()=>{
     const sd = getTargetData(context);
+    const addedOnDelete = newProblemsAfter(sd, c=>{ c.transactions = c.transactions.filter(x=>x.id !== txId); });
+    if(addedOnDelete.length){ showToast(describeProblem(addedOnDelete[0])); render(); return; }
     applyTxDelete(sd, txId);
     await saveTargetData(context);
     showToast('Entry deleted — totals recalculated.', 'success');
@@ -766,7 +928,7 @@ function buildHistoryTable(sd, context, canEdit, txOverride){
       const sharesField = tx.type!=='priceUpdate' ? ('<input type="number" id="editShares-'+tx.id+'" value="'+tx.shares+'" step="any" style="width:70px;">') : '—';
       const feeField = tx.type==='sell' ? ('<input type="number" id="editFee-'+tx.id+'" value="'+tx.fee+'" step="0.01" style="width:80px;">') : '—';
       return '<tr>'+
-        '<td><input type="date" id="editDate-'+tx.id+'" value="'+tx.date+'" style="width:135px;"></td>'+
+        '<td>'+(context==='student' ? tx.date : '<input type="date" id="editDate-'+tx.id+'" value="'+tx.date+'" style="width:135px;">')+'</td>'+
         '<td class="muted">'+timeStr(tx.createdAt)+'</td>'+
         '<td><span class="pill '+pillClass(tx.type)+'">'+txLabel(tx)+'</span></td>'+
         '<td><input type="text" id="editTicker-'+tx.id+'" value="'+esc(tx.ticker)+'" style="width:65px;text-transform:uppercase;"></td>'+
@@ -894,13 +1056,13 @@ function goStudentTab(tab){
   state.studentTab = tab;
   state.editingTxId = null; state.editingContext = null;
   if(tab === 'class' || tab === 'leaderboard'){ loadAllStudentData().then(render); }
-  else if(tab === 'trade'){ loadShared('settings', state.settings).then(s=>{ state.settings = s; render(); }); }
+  else if(tab === 'trade' || tab === 'update'){ loadShared('settings', state.settings).then(s=>{ state.settings = s; render(); }); }
   else render();
 }
 function goTeacherTab(tab){
   state.teacherTab = tab;
   state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
-  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
+  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || tab === 'check' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
   else render();
 }
 function setLeaderboardSort(mode){
@@ -1274,6 +1436,7 @@ function buildTeacherApp(){
   else if(t==='records') body = buildTeacherRecords();
   else if(t==='class') body = buildClassPerformance(true);
   else if(t==='prices') body = buildTeacherPrices();
+  else if(t==='check') body = buildTeacherCheck();
   else if(t==='leaderboard') body = buildLeaderboard();
   return (
     '<div class="topbar">' +
@@ -1287,6 +1450,7 @@ function buildTeacherApp(){
       tabBtn('class',t,'🏫 Class Performance',"goTeacherTab('class')") +
       tabBtn('leaderboard',t,'🏆 Leaderboard',"goTeacherTab('leaderboard')") +
       tabBtn('prices',t,'💲 Live Prices',"goTeacherTab('prices')") +
+      tabBtn('check',t,'🛡️ Data Check',"goTeacherTab('check')") +
     '</div>' +
     body
   );
@@ -1313,6 +1477,11 @@ function buildTeacherRoster(){
         '<div><label>Starting cash (for new students)</label><input type="number" id="settingStartingCash" min="1" step="1" value="'+state.settings.startingCash+'"></div>' +
         '<div><label>Sell fee percentage</label><input type="number" id="settingFeePercent" min="0" step="0.1" value="'+state.settings.feePercent+'"></div>' +
       '</div>' +
+      '<div class="field-row">' +
+        '<div><label>Highest price per share allowed</label><input type="number" id="settingMaxPrice" min="1" step="1" value="'+(state.settings.maxPricePerShare || 100000)+'"></div>' +
+        '<div><label>Biggest price change allowed (%)</label><input type="number" id="settingMaxChange" min="1" step="1" value="'+(state.settings.maxPriceChangePct || 25)+'"></div>' +
+      '</div>' +
+      '<div class="small-note">Safeguards for student entries. A price above the highest allowed, or more than this percent away from the last price logged for that stock, is rejected with a message. Teacher live-price updates are not limited.</div>' +
       '<div class="small-note">Changing the starting cash only affects students added from now on — it won\'t change cash already in play. The fee percentage applies to every sell right away.</div>' +
       '<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:700;color:var(--ink-soft);">' +
         '<input type="checkbox" id="settingStudentsCanEdit" style="width:auto;" '+(state.settings.studentsCanEdit?'checked':'')+'> Allow students to edit or delete their own past transactions and price updates' +
@@ -1673,6 +1842,7 @@ function setTickerFixAll(checked){
   });
 }
 async function openStudentRecord(id, ticker){
+  state.teacherTab = 'records';
   state.recordsView = 'student';
   await teacherSelectStudent(id);
   state.recordsFilterTicker = ticker;
@@ -1728,9 +1898,12 @@ async function applyTickerFix(){
   if(!ids.length){ showToast('Select at least one student first.'); return; }
   askConfirm('Change ' + oldT + (newT && newT !== oldT ? ' to ' + newT : '') + (newName ? ' and set the stock name to ' + newName : '') + ' for ' + ids.length + ' student' + (ids.length === 1 ? '' : 's') + '? Their cash, holdings, and charts will be recalculated. Students you did not select are left untouched.', async ()=>{
     let studentsChanged = 0, entriesChanged = 0;
+    const skipped = [];
     await Promise.all(ids.map(async id=>{
       const d = await loadShared('student:' + id, null);
       if(!d) return;
+      const added = newProblemsAfter(d, c=>{ c.transactions.forEach(tx=>{ if(tx.ticker === oldT) tx.ticker = targetT; }); });
+      if(added.length){ skipped.push((state.roster.find(s=>s.id === id) || {}).name || id); return; }
       let n = 0;
       d.transactions.forEach(tx=>{
         if(tx.ticker === oldT){
@@ -1750,7 +1923,7 @@ async function applyTickerFix(){
     }));
     state.tickerSelected = targetT;
     state.tickerFixSel = {};
-    showToast('Updated ' + entriesChanged + ' entr' + (entriesChanged === 1 ? 'y' : 'ies') + ' for ' + studentsChanged + ' student' + (studentsChanged === 1 ? '' : 's') + '.', 'success');
+    showToast('Updated ' + entriesChanged + ' entr' + (entriesChanged === 1 ? 'y' : 'ies') + ' for ' + studentsChanged + ' student' + (studentsChanged === 1 ? '' : 's') + '.' + (skipped.length ? ' Skipped (the change would break their account): ' + skipped.join(', ') + '.' : ''), skipped.length ? 'error' : 'success');
     render();
   });
 }
