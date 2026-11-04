@@ -309,7 +309,13 @@ let state = {
   liveSelected: {},
   recordsView: 'student',
   tickerSelected: '',
-  tickerFixSel: {}
+  tickerFixSel: {},
+  twelveKeyMem: '',
+  verify: null,
+  verifyTypes: {buy: true, sell: false, priceUpdate: false},
+  verifyFrom: '',
+  verifyTol: 2,
+  verifyLastMem: ''
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -767,6 +773,302 @@ function buildTeacherCheck(){
   return '<div class="card" style="margin-bottom:14px;"><h3>🛡️ Data check</h3>' + intro + '<div><strong>' + list.length + '</strong> student' + (list.length === 1 ? '' : 's') + ' need a look.</div></div>' + cards;
 }
 
+/* ---------- Verify entry prices against real market history (teacher, Twelve Data) ---------- */
+function getTwelveKey(){
+  if(state.twelveKeyMem) return state.twelveKeyMem;
+  try{ return localStorage.getItem('gp_twelve_key') || ''; }catch(e){ return ''; }
+}
+function saveTwelveKey(){
+  const k = val('twelveKeyInput').trim();
+  if(!k){ showToast('Paste your Twelve Data API key first.'); return; }
+  state.twelveKeyMem = k;
+  try{ localStorage.setItem('gp_twelve_key', k); }catch(e){}
+  showToast('Key saved in this browser only.', 'success');
+  render();
+}
+function clearTwelveKey(){
+  state.twelveKeyMem = '';
+  try{ localStorage.removeItem('gp_twelve_key'); }catch(e){}
+  state.verify = null;
+  showToast('Key removed from this browser.', 'success');
+  render();
+}
+function getVerifyLast(){
+  if(state.verifyLastMem) return state.verifyLastMem;
+  try{ return localStorage.getItem('gp_verify_last') || ''; }catch(e){ return ''; }
+}
+function setVerifyLast(d){
+  state.verifyLastMem = d;
+  try{ localStorage.setItem('gp_verify_last', d); }catch(e){}
+}
+function setVerifyType(t, checked){
+  state.verifyTypes[t] = !!checked;
+  render();
+}
+function setVerifyOpt(field, value){
+  if(field === 'from'){
+    state.verifyFrom = value;
+  } else if(field === 'tol'){
+    const n = parseFloat(value);
+    if(isNaN(n) || n < 0){ showToast('Enter 0 or a positive percentage.'); return; }
+    state.verifyTol = n;
+  }
+  render();
+}
+function useLastVerifyDate(){
+  state.verifyFrom = getVerifyLast();
+  render();
+}
+function stopVerify(){
+  if(state.verify) state.verify.cancel = true;
+}
+async function sleepChunked(ms, shouldStop){
+  let left = ms;
+  while(left > 0){
+    if(shouldStop && shouldStop()) return;
+    const step = Math.min(1000, left);
+    await sleepMs(step);
+    left -= step;
+  }
+}
+async function twelveWaitForSlot(onWait, shouldStop){
+  const LIMIT = 7, WINDOW = 60000;
+  if(!state.twelveCallTimes) state.twelveCallTimes = [];
+  const times = state.twelveCallTimes;
+  for(;;){
+    if(shouldStop && shouldStop()) return false;
+    const now = Date.now();
+    while(times.length && now - times[0] > WINDOW) times.shift();
+    if(times.length < LIMIT){ times.push(now); if(onWait) onWait(false); return true; }
+    if(onWait) onWait(true);
+    await sleepMs(Math.min(1000, WINDOW - (now - times[0]) + 250));
+  }
+}
+async function fetchTwelveSeries(ticker, dmin, dmax, key, onWait, shouldStop){
+  const url = 'https://api.twelvedata.com/time_series?symbol=' + encodeURIComponent(ticker) +
+    '&interval=1day&start_date=' + addDays(dmin, -7) + '&end_date=' + addDays(dmax, 1) +
+    '&outputsize=5000&order=asc&apikey=' + encodeURIComponent(key);
+  for(let attempt = 0; attempt < 3; attempt++){
+    const gotSlot = await twelveWaitForSlot(onWait, shouldStop);
+    if(!gotSlot) return {status: 'stopped'};
+    let data;
+    try{
+      const res = await fetch(url);
+      data = await res.json();
+    }catch(e){
+      return {status: 'network'};
+    }
+    if(data && data.status === 'error'){
+      const code = Number(data.code);
+      const msg = String(data.message || '');
+      if(code === 429){
+        if(/day/i.test(msg)) return {status: 'daily', message: msg};
+        if(onWait) onWait(true);
+        await sleepChunked(60000, shouldStop);
+        continue;
+      }
+      if(code === 401) return {status: 'badkey', message: msg};
+      if(code === 403) return {status: 'notcovered', message: msg};
+      if(code === 404) return {status: 'notfound', message: msg};
+      if(code === 400 && /symbol/i.test(msg)) return {status: 'notfound', message: msg};
+      return {status: 'error', message: msg};
+    }
+    if(!data || !Array.isArray(data.values) || !data.values.length) return {status: 'nodata'};
+    const bars = {};
+    data.values.forEach(v=>{
+      const lo = parseFloat(v.low), hi = parseFloat(v.high), cl = parseFloat(v.close);
+      const d = String(v.datetime || '').slice(0, 10);
+      if(d && isFinite(lo) && isFinite(hi)) bars[d] = {low: lo, high: hi, close: cl};
+    });
+    const dates = Object.keys(bars).sort();
+    if(!dates.length) return {status: 'nodata'};
+    return {status: 'ok', bars: bars, dates: dates};
+  }
+  return {status: 'ratelimit'};
+}
+function collectVerifyEntries(){
+  const types = state.verifyTypes;
+  const from = state.verifyFrom;
+  const entries = [];
+  const byTicker = {};
+  state.roster.forEach(s=>{
+    const d = state.allStudentData[s.id];
+    if(!d || !d.transactions) return;
+    d.transactions.forEach(tx=>{
+      if(!types[tx.type]) return;
+      if(tx.source === 'teacher') return;
+      if(from && tx.date < from) return;
+      if(!(tx.price > 0)) return;
+      const e = {studentId: s.id, name: s.name, txId: tx.id, ticker: tx.ticker, date: tx.date, type: tx.type, price: tx.price};
+      entries.push(e);
+      if(!byTicker[tx.ticker]) byTicker[tx.ticker] = [];
+      byTicker[tx.ticker].push(e);
+    });
+  });
+  return {entries: entries, byTicker: byTicker};
+}
+function judgeEntry(e, series, tolPct){
+  const base = {studentId: e.studentId, name: e.name, txId: e.txId, ticker: e.ticker, date: e.date, type: e.type, price: e.price};
+  if(series.status !== 'ok') return Object.assign(base, {status: series.status});
+  let bar = series.bars[e.date];
+  let barDate = e.date;
+  let closed = false;
+  if(!bar){
+    const earlier = series.dates.filter(d=>d < e.date);
+    if(!earlier.length) return Object.assign(base, {status: 'nodata'});
+    barDate = earlier[earlier.length - 1];
+    bar = series.bars[barDate];
+    closed = true;
+  }
+  const tol = tolPct / 100;
+  let status = 'ok';
+  let offPct = 0;
+  if(e.price < bar.low * (1 - tol)){ status = 'out'; offPct = (bar.low - e.price) / bar.low * 100; }
+  else if(e.price > bar.high * (1 + tol)){ status = 'out'; offPct = (e.price - bar.high) / bar.high * 100; }
+  return Object.assign(base, {status: status, low: bar.low, high: bar.high, barDate: barDate, closed: closed, offPct: offPct});
+}
+async function runVerify(){
+  const key = getTwelveKey();
+  if(!key){ showToast('Save your Twelve Data API key first.'); return; }
+  if(state.verify && state.verify.running) return;
+  await loadAllStudentData();
+  const found = collectVerifyEntries();
+  const tickers = Object.keys(found.byTicker).sort();
+  if(!tickers.length){ showToast('No entries match those settings.'); return; }
+  const v = {running: true, cancel: false, done: 0, total: tickers.length, waiting: false, results: [], stopReason: '', finishedAt: null, entryCount: found.entries.length};
+  state.verify = v;
+  render();
+  const onWait = w=>{ if(v.waiting !== w){ v.waiting = w; render(); } };
+  const shouldStop = ()=>v.cancel;
+  let networkFails = 0;
+  for(let i = 0; i < tickers.length; i++){
+    if(v.cancel) break;
+    const t = tickers[i];
+    const dates = found.byTicker[t].map(e=>e.date).sort();
+    const series = await fetchTwelveSeries(t, dates[0], dates[dates.length - 1], key, onWait, shouldStop);
+    if(series.status === 'stopped') break;
+    if(series.status === 'badkey'){ v.stopReason = 'Twelve Data rejected the API key. Check the key and try again.'; break; }
+    if(series.status === 'daily'){ v.stopReason = 'The free daily limit of lookups was reached. Run the check again tomorrow. Stocks already checked are shown here.'; break; }
+    if(series.status === 'network'){
+      networkFails++;
+      if(networkFails >= 3){ v.stopReason = 'Could not reach Twelve Data from this page. The school network or the browser may be blocking the request.'; break; }
+    } else {
+      networkFails = 0;
+    }
+    found.byTicker[t].forEach(e=>{ v.results.push(judgeEntry(e, series, state.verifyTol)); });
+    v.done++;
+    render();
+  }
+  v.running = false;
+  v.waiting = false;
+  v.finishedAt = Date.now();
+  if(!v.cancel && !v.stopReason) setVerifyLast(todayStr());
+  render();
+}
+function buildVerifyResults(v){
+  const exists = r=>{
+    const d = state.allStudentData[r.studentId];
+    return !!(d && d.transactions && d.transactions.some(t=>t.id === r.txId));
+  };
+  const res = v.results.filter(exists);
+  const out = res.filter(r=>r.status === 'out').sort((a,b)=>b.offPct - a.offPct);
+  const ok = res.filter(r=>r.status === 'ok');
+  const unver = res.filter(r=>r.status !== 'ok' && r.status !== 'out');
+  const statusText = {
+    notfound: 'Ticker not found',
+    notcovered: 'Not covered on the free plan',
+    nodata: 'No price data for that date',
+    network: 'Could not reach Twelve Data',
+    ratelimit: 'Rate limit hit, run again later',
+    error: 'Error'
+  };
+  let html = '<div style="margin:12px 0;"><strong>' + res.length + '</strong> entr' + (res.length === 1 ? 'y' : 'ies') + ' checked: ' +
+    '<span class="status-open">' + ok.length + ' within the day range</span>, ' +
+    '<span style="color:var(--red);font-weight:800;">' + out.length + ' outside it</span>, ' +
+    unver.length + ' could not be verified.</div>';
+  if(v.stopReason) html += '<div class="error-inline" style="margin-bottom:10px;">' + esc(v.stopReason) + '</div>';
+  if(!v.running && v.done < v.total && !v.stopReason) html += '<div class="small-note" style="margin-bottom:10px;">Stopped early. ' + (v.total - v.done) + ' stock' + (v.total - v.done === 1 ? '' : 's') + ' were not checked.</div>';
+  if(!v.running && v.stopReason && v.done < v.total) html += '<div class="small-note" style="margin-bottom:10px;">' + (v.total - v.done) + ' stock' + (v.total - v.done === 1 ? '' : 's') + ' were not checked.</div>';
+  if(out.length){
+    const rows = out.map(r=>
+      '<tr style="background:var(--clay-pale);"><td><strong>' + esc(r.name) + '</strong></td><td>' + esc(r.ticker) + '</td><td>' + r.date + '</td><td>' + pillLabel(r.type) + '</td>' +
+      '<td>' + money(r.price) + '</td>' +
+      '<td>' + money(r.low) + ' - ' + money(r.high) + (r.closed ? '<div class="muted" style="font-size:0.8rem;">market closed, last session ' + r.barDate + '</div>' : '') + '</td>' +
+      '<td style="color:var(--red);font-weight:800;">' + r.offPct.toFixed(1) + '% ' + (r.price < r.low ? 'below' : 'above') + '</td>' +
+      '<td style="white-space:nowrap;"><button class="btn ghost small" data-id="' + esc(r.studentId) + '" data-ticker="' + esc(r.ticker) + '" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker)">Open record</button> ' +
+      '<button class="btn danger small" data-id="' + esc(r.studentId) + '" data-tx="' + esc(r.txId) + '" onclick="deleteEntryFromCheck(this.dataset.id, this.dataset.tx)">Delete entry</button></td></tr>'
+    ).join('');
+    html += '<h4 style="margin-top:14px;">Entries outside that day range</h4>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Student</th><th>Ticker</th><th>Date</th><th>Type</th><th>Entered price</th><th>Real low - high</th><th>Off by</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  } else if(res.length && !v.running){
+    html += '<div class="empty-note">✅ Every verified entry is inside its real price range.</div>';
+  }
+  if(unver.length){
+    const groups = {};
+    unver.forEach(r=>{ const k = r.ticker + '|' + r.status; groups[k] = (groups[k] || 0) + 1; });
+    html += '<h4 style="margin-top:14px;">Could not be verified</h4><div class="small-note">' +
+      Object.keys(groups).sort().map(k=>{ const p = k.split('|'); return esc(p[0]) + ': ' + (statusText[p[1]] || 'Error') + ' (' + groups[k] + ' entr' + (groups[k] === 1 ? 'y' : 'ies') + ')'; }).join('<br>') + '</div>';
+  }
+  if(ok.length){
+    html += '<details style="margin-top:14px;"><summary>Show the ' + ok.length + ' entries inside the range</summary>' +
+      ok.map(r=>'<div class="small-note" style="margin-top:4px;"><strong>' + esc(r.name) + '</strong>: ' + esc(r.ticker) + ' ' + r.date + ' at ' + money(r.price) + ' <span class="muted">(real range ' + money(r.low) + ' - ' + money(r.high) + (r.closed ? ', market closed' : '') + ')</span></div>').join('') +
+      '</details>';
+  }
+  return html;
+}
+function buildTeacherVerify(){
+  const key = getTwelveKey();
+  const v = state.verify;
+  const keyCard = (
+    '<div class="card dashed" style="margin-bottom:18px;">' +
+      '<div class="sticker">🔎</div>' +
+      '<h3>Verify prices against real history</h3>' +
+      '<div class="small-note" style="margin-bottom:8px;">Compares each entry price with the real low and high for that stock on the day it was entered. Uses a free Twelve Data account (twelvedata.com, no credit card). Paste your key below. It is stored only in this browser, never in the shared database or the site code.</div>' +
+      (key
+        ? '<div>🔑 Key saved in this browser. <button class="btn ghost small" onclick="clearTwelveKey()">Remove key</button></div>'
+        : '<label>Twelve Data API key</label><input type="password" id="twelveKeyInput" placeholder="Paste your key"><button class="btn clay" style="margin-top:12px;" onclick="saveTwelveKey()">Save key</button>') +
+    '</div>'
+  );
+  if(!key) return keyCard;
+
+  const types = state.verifyTypes;
+  const box = (t, label)=>'<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:600;color:var(--ink);"><input type="checkbox" style="width:auto;" data-t="' + t + '" onchange="setVerifyType(this.dataset.t, this.checked)"' + (types[t] ? ' checked' : '') + '> ' + label + '</label>';
+  const found = collectVerifyEntries();
+  const nT = Object.keys(found.byTicker).length;
+  const mins = Math.ceil(nT / 7);
+  const last = getVerifyLast();
+  const running = !!(v && v.running);
+  const estimate = found.entries.length
+    ? ('<strong>' + found.entries.length + '</strong> entr' + (found.entries.length === 1 ? 'y' : 'ies') + ' across <strong>' + nT + '</strong> stock' + (nT === 1 ? '' : 's') + '. At the free-plan pace of 8 lookups a minute, that takes about <strong>' + mins + ' minute' + (mins === 1 ? '' : 's') + '</strong>.' + (nT > 700 ? ' That is close to the free daily limit of 800, so it may need two days.' : ''))
+    : 'No entries match these settings.';
+  const optionsCard = (
+    '<div class="card" style="margin-bottom:18px;">' +
+      '<h3>What to check</h3>' +
+      '<div style="display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 10px;">' +
+        box('buy', 'Buys') + box('sell', 'Sells') + box('priceUpdate', 'Student price updates') +
+      '</div>' +
+      '<div class="field-row">' +
+        '<div><label>Only entries from this date on (optional)</label><input type="date" value="' + esc(state.verifyFrom) + '" data-field="from" onchange="setVerifyOpt(this.dataset.field, this.value)"></div>' +
+        '<div><label>Allow this much outside the real range (%)</label><input type="number" min="0" step="0.5" value="' + state.verifyTol + '" data-field="tol" onchange="setVerifyOpt(this.dataset.field, this.value)"></div>' +
+      '</div>' +
+      '<div class="small-note" style="margin-top:6px;">' + (last ? 'Last completed check: ' + esc(last) + '. <button class="btn ghost small" onclick="useLastVerifyDate()">Start from that date</button>' : 'No completed check yet.') + ' Entries from today are best checked after the market closes, because the day range is still changing before then. Live prices you applied as the teacher are never checked.</div>' +
+      '<div style="margin-top:10px;">' + estimate + '</div>' +
+      (running
+        ? '<button class="btn danger" style="margin-top:12px;" onclick="stopVerify()">Stop</button>'
+        : '<button class="btn clay" style="margin-top:12px;" onclick="runVerify()"' + (found.entries.length ? '' : ' disabled') + '>Run check</button>') +
+    '</div>'
+  );
+  let resultsCard = '';
+  if(v){
+    resultsCard = '<div class="card"><h3>Results</h3>' +
+      (v.running
+        ? '<div class="empty-note">Checking... ' + v.done + ' of ' + v.total + ' stocks.' + (v.waiting ? '<br>Pausing to stay within the free limit. It continues on its own, so please keep this page open.' : '') + '</div>'
+        : '') +
+      buildVerifyResults(v) + '</div>';
+  }
+  return keyCard + optionsCard + resultsCard;
+}
+
 async function buyStock(){
   const name = val('buyName').trim();
   const ticker = val('buyTicker').trim().toUpperCase();
@@ -1062,7 +1364,7 @@ function goStudentTab(tab){
 function goTeacherTab(tab){
   state.teacherTab = tab;
   state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
-  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || tab === 'check' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
+  if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || tab === 'verify' || tab === 'check' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
   else render();
 }
 function setLeaderboardSort(mode){
@@ -1436,6 +1738,7 @@ function buildTeacherApp(){
   else if(t==='records') body = buildTeacherRecords();
   else if(t==='class') body = buildClassPerformance(true);
   else if(t==='prices') body = buildTeacherPrices();
+  else if(t==='verify') body = buildTeacherVerify();
   else if(t==='check') body = buildTeacherCheck();
   else if(t==='leaderboard') body = buildLeaderboard();
   return (
@@ -1450,6 +1753,7 @@ function buildTeacherApp(){
       tabBtn('class',t,'🏫 Class Performance',"goTeacherTab('class')") +
       tabBtn('leaderboard',t,'🏆 Leaderboard',"goTeacherTab('leaderboard')") +
       tabBtn('prices',t,'💲 Live Prices',"goTeacherTab('prices')") +
+      tabBtn('verify',t,'🔎 Verify Prices',"goTeacherTab('verify')") +
       tabBtn('check',t,'🛡️ Data Check',"goTeacherTab('check')") +
     '</div>' +
     body
