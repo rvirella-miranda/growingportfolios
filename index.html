@@ -315,7 +315,9 @@ let state = {
   verifyTypes: {buy: true, sell: false, priceUpdate: false},
   verifyFrom: '',
   verifyTol: 2,
-  verifyLastMem: ''
+  verifyLastMem: '',
+  recordsBackTo: '',
+  verifySaveFailed: false
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -767,7 +769,7 @@ function buildTeacherCheck(){
     }).join('');
     return '<div class="card" style="margin-bottom:14px;">' +
       '<div class="flex-between"><h4>' + esc(s.name) + ' <span class="muted">(' + s.issues.length + ' issue' + (s.issues.length === 1 ? '' : 's') + ')</span></h4>' +
-      '<button class="btn ghost small" data-id="' + esc(s.id) + '" data-ticker="" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker)">Open record</button></div>' +
+      '<button class="btn ghost small" data-id="' + esc(s.id) + '" data-ticker="" data-back="check" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker, this.dataset.back)">Open record</button></div>' +
       rows + '</div>';
   }).join('');
   return '<div class="card" style="margin-bottom:14px;"><h3>🛡️ Data check</h3>' + intro + '<div><strong>' + list.length + '</strong> student' + (list.length === 1 ? '' : 's') + ' need a look.</div></div>' + cards;
@@ -789,6 +791,7 @@ function saveTwelveKey(){
 function clearTwelveKey(){
   state.twelveKeyMem = '';
   try{ localStorage.removeItem('gp_twelve_key'); }catch(e){}
+  try{ localStorage.removeItem('gp_verify_results'); }catch(e){}
   state.verify = null;
   showToast('Key removed from this browser.', 'success');
   render();
@@ -963,14 +966,19 @@ async function runVerify(){
   v.waiting = false;
   v.finishedAt = Date.now();
   if(!v.cancel && !v.stopReason) setVerifyLast(todayStr());
+  if(v.results.length) saveVerifyResults(v);
   render();
 }
 function buildVerifyResults(v){
-  const exists = r=>{
+  let changed = 0;
+  const live = r=>{
     const d = state.allStudentData[r.studentId];
-    return !!(d && d.transactions && d.transactions.some(t=>t.id === r.txId));
+    const tx = (d && d.transactions) ? d.transactions.find(t=>t.id === r.txId) : null;
+    if(!tx) return false;
+    if(tx.price !== r.price || tx.ticker !== r.ticker || tx.date !== r.date){ changed++; return false; }
+    return true;
   };
-  const res = v.results.filter(exists);
+  const res = v.results.filter(live);
   const out = res.filter(r=>r.status === 'out').sort((a,b)=>b.offPct - a.offPct);
   const ok = res.filter(r=>r.status === 'ok');
   const unver = res.filter(r=>r.status !== 'ok' && r.status !== 'out');
@@ -986,6 +994,7 @@ function buildVerifyResults(v){
     '<span class="status-open">' + ok.length + ' within the day range</span>, ' +
     '<span style="color:var(--red);font-weight:800;">' + out.length + ' outside it</span>, ' +
     unver.length + ' could not be verified.</div>';
+  if(changed) html += '<div class="small-note" style="margin-bottom:10px;">' + changed + ' entr' + (changed === 1 ? 'y was' : 'ies were') + ' edited after this check and ' + (changed === 1 ? 'is' : 'are') + ' hidden here. Run the check again to re-verify ' + (changed === 1 ? 'it' : 'them') + '.</div>';
   if(v.stopReason) html += '<div class="error-inline" style="margin-bottom:10px;">' + esc(v.stopReason) + '</div>';
   if(!v.running && v.done < v.total && !v.stopReason) html += '<div class="small-note" style="margin-bottom:10px;">Stopped early. ' + (v.total - v.done) + ' stock' + (v.total - v.done === 1 ? '' : 's') + ' were not checked.</div>';
   if(!v.running && v.stopReason && v.done < v.total) html += '<div class="small-note" style="margin-bottom:10px;">' + (v.total - v.done) + ' stock' + (v.total - v.done === 1 ? '' : 's') + ' were not checked.</div>';
@@ -995,7 +1004,7 @@ function buildVerifyResults(v){
       '<td>' + money(r.price) + '</td>' +
       '<td>' + money(r.low) + ' - ' + money(r.high) + (r.closed ? '<div class="muted" style="font-size:0.8rem;">market closed, last session ' + r.barDate + '</div>' : '') + '</td>' +
       '<td style="color:var(--red);font-weight:800;">' + r.offPct.toFixed(1) + '% ' + (r.price < r.low ? 'below' : 'above') + '</td>' +
-      '<td style="white-space:nowrap;"><button class="btn ghost small" data-id="' + esc(r.studentId) + '" data-ticker="' + esc(r.ticker) + '" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker)">Open record</button> ' +
+      '<td style="white-space:nowrap;"><button class="btn ghost small" data-id="' + esc(r.studentId) + '" data-ticker="' + esc(r.ticker) + '" data-back="verify" onclick="openStudentRecord(this.dataset.id, this.dataset.ticker, this.dataset.back)">Open record</button> ' +
       '<button class="btn danger small" data-id="' + esc(r.studentId) + '" data-tx="' + esc(r.txId) + '" onclick="deleteEntryFromCheck(this.dataset.id, this.dataset.tx)">Delete entry</button></td></tr>'
     ).join('');
     html += '<h4 style="margin-top:14px;">Entries outside that day range</h4>' +
@@ -1060,13 +1069,54 @@ function buildTeacherVerify(){
   );
   let resultsCard = '';
   if(v){
-    resultsCard = '<div class="card"><h3>Results</h3>' +
+    resultsCard = '<div class="card"><div class="flex-between"><h3>Results</h3>' + (v.running ? '' : '<button class="btn ghost small" onclick="clearVerifyResults()">Clear saved results</button>') + '</div>' +
+      ((!v.running && v.finishedAt) ? '<div class="small-note">From the check run on ' + esc(new Date(v.finishedAt).toLocaleString()) + '. ' + (state.verifySaveFailed ? '<span style="color:var(--red);font-weight:700;">These could not be saved in this browser (storage is full or blocked), so they will be lost if you reload the page.</span>' : 'They are saved in this browser, so you can open a record, leave, or reload and come back without running the check again.') + '</div>' : '') +
       (v.running
         ? '<div class="empty-note">Checking... ' + v.done + ' of ' + v.total + ' stocks.' + (v.waiting ? '<br>Pausing to stay within the free limit. It continues on its own, so please keep this page open.' : '') + '</div>'
         : '') +
       buildVerifyResults(v) + '</div>';
   }
   return keyCard + optionsCard + resultsCard;
+}
+
+/* ---------- Keep Verify results across reloads, and a way back from a student record ---------- */
+function saveVerifyResults(v){
+  let ok = true;
+  try{
+    localStorage.setItem('gp_verify_results', JSON.stringify({
+      savedAt: v.finishedAt || Date.now(),
+      results: v.results,
+      done: v.done,
+      total: v.total,
+      stopReason: v.stopReason || '',
+      entryCount: v.entryCount || v.results.length
+    }));
+  }catch(e){
+    ok = false;
+  }
+  state.verifySaveFailed = !ok;
+  return ok;
+}
+function restoreVerifyResults(){
+  try{
+    const raw = localStorage.getItem('gp_verify_results');
+    if(!raw) return;
+    const s = JSON.parse(raw);
+    if(!s || !Array.isArray(s.results)) return;
+    state.verify = {running: false, cancel: false, waiting: false, results: s.results, done: s.done, total: s.total, stopReason: s.stopReason || '', finishedAt: s.savedAt, entryCount: s.entryCount};
+  }catch(e){}
+}
+function clearVerifyResults(){
+  state.verify = null;
+  state.verifySaveFailed = false;
+  try{ localStorage.removeItem('gp_verify_results'); }catch(e){}
+  showToast('Saved results cleared.', 'success');
+  render();
+}
+function returnFromRecords(){
+  const t = state.recordsBackTo || 'roster';
+  state.recordsBackTo = '';
+  goTeacherTab(t);
 }
 
 async function buyStock(){
@@ -1364,6 +1414,8 @@ function goStudentTab(tab){
 function goTeacherTab(tab){
   state.teacherTab = tab;
   state.editingTxId = null; state.editingContext = null; state.editingGradeCell = null;
+  state.recordsBackTo = '';
+  if(tab === 'verify' && !state.verify) restoreVerifyResults();
   if(tab === 'grading' || tab === 'class' || tab === 'leaderboard' || tab === 'prices' || tab === 'verify' || tab === 'check' || (tab === 'records' && state.recordsView === 'ticker')){ loadAllStudentData().then(render); }
   else render();
 }
@@ -2145,8 +2197,9 @@ function setTickerFixAll(checked){
     state.tickerFixSel[el.dataset.id] = checked;
   });
 }
-async function openStudentRecord(id, ticker){
+async function openStudentRecord(id, ticker, backTo){
   state.teacherTab = 'records';
+  state.recordsBackTo = backTo || '';
   state.recordsView = 'student';
   await teacherSelectStudent(id);
   state.recordsFilterTicker = ticker;
@@ -2308,7 +2361,11 @@ function buildTeacherRecords(){
     '<button class="tab-btn' + (state.recordsView !== 'ticker' ? ' active' : '') + '" data-mode="student" onclick="setRecordsView(this.dataset.mode)">👤 By student</button>' +
     '<button class="tab-btn' + (state.recordsView === 'ticker' ? ' active' : '') + '" data-mode="ticker" onclick="setRecordsView(this.dataset.mode)">🔤 By ticker (whole class)</button>' +
   '</div>';
-  return toggle + (state.recordsView === 'ticker' ? buildTeacherTickerView() : buildTeacherRecordsByStudent());
+  const backLabels = {verify: 'Verify Prices results', check: 'Data Check'};
+  const back = (state.recordsBackTo && backLabels[state.recordsBackTo])
+    ? '<div style="margin-bottom:12px;"><button class="btn clay small" onclick="returnFromRecords()">← Back to ' + backLabels[state.recordsBackTo] + '</button></div>'
+    : '';
+  return back + toggle + (state.recordsView === 'ticker' ? buildTeacherTickerView() : buildTeacherRecordsByStudent());
 }
 function buildTeacherRecordsByStudent(){
   const options = '<option value="">— Choose a student —</option>' +
