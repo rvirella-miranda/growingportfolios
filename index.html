@@ -152,6 +152,8 @@
   .rank.r1{ background:#F6E4A8; } .rank.r2{ background:#E4E0EE; } .rank.r3{ background:#EBCDB5; }
   .note-flag{ display:inline-block; margin-left:6px; padding:1px 8px; border-radius:999px; background:var(--lav); color:#4F3E78; font-size:11px; font-weight:600; }
 
+  .filter-summary{ margin-top:14px; padding:10px 14px; border-radius:10px; background:var(--paper-2); font-size:13px; color:var(--ink); }
+
   /* forms */
   label{ display:block; font-size:12px; font-weight:600; color: var(--ink-soft); margin: 14px 0 6px; }
   input[type=text], input[type=number], input[type=date], input[type=password], select{
@@ -408,7 +410,11 @@ let state = {
   verifyLastMem: '',
   recordsBackTo: '',
   verifySaveFailed: false,
-  overviewChartView: 'total'
+  overviewChartView: 'total',
+  studentFilterTicker: '',
+  studentFilterStart: '',
+  studentFilterEnd: '',
+  studentFilterBig: false
 };
 
 /* ---------- Custom confirm modal (native confirm() can be silently blocked inside embedded iframes, e.g. Google Sites) ---------- */
@@ -598,6 +604,7 @@ async function studentLogin(){
   state.currentStudent = {id, name: entry.name};
   state.studentData = data;
   state.studentTab = 'overview';
+  resetStudentFilter();
   state.view = 'student';
   render();
 }
@@ -621,6 +628,7 @@ function teacherLogin(){
 }
 
 function logout(){
+  resetStudentFilter();
   state.currentStudent = null; state.studentData = null; state.view = 'login';
   render();
 }
@@ -1520,7 +1528,7 @@ function studentHero(tab){
     trade: ['Trade', 'Buy and sell', 'Log the price you see on the market. Your teacher can check every entry against real prices.'],
     update: ['Update prices', 'Keep your prices current', 'Log today&#39;s price for each stock you hold so your portfolio shows its real value.'],
     mystocks: ['My stocks', 'Every stock you have held', 'Each chart follows one stock from the day you bought it.'],
-    history: ['History', 'Your activity log', 'Every buy, sell, and price update, newest first.'],
+    history: ['History', 'Your activity log', 'Every buy, sell, and price update, newest first. Filter by stock or date to look for anything that does not add up.'],
     class: ['Class performance', 'How the class is doing', 'Total portfolio value for every student over time.'],
     leaderboard: ['Leaderboard', 'Class standings', 'Ranked by total portfolio value or by percent gain.']
   };
@@ -1920,17 +1928,87 @@ function buildMyStocks(){
   return '<div class="stock-card-grid">'+cards+'</div>';
 }
 
+/* ---------- Student History: filter by stock, date, or big price moves ---------- */
+function updateStudentFilter(field, value){
+  if(field === 'ticker') state.studentFilterTicker = value;
+  else if(field === 'start') state.studentFilterStart = value;
+  else if(field === 'end') state.studentFilterEnd = value;
+  else if(field === 'big') state.studentFilterBig = !!value;
+  render();
+}
+function resetStudentFilter(){
+  state.studentFilterTicker = ''; state.studentFilterStart = ''; state.studentFilterEnd = ''; state.studentFilterBig = false;
+}
+function clearStudentFilter(){
+  resetStudentFilter();
+  render();
+}
+function bigMove(flags, tx){
+  return flags[tx.id] != null && Math.abs(flags[tx.id]) >= ANOMALY_THRESHOLD_PCT;
+}
 function buildStudentHistory(){
   const sd = state.studentData;
   const canEdit = !!state.settings.studentsCanEdit;
+  const all = sd.transactions;
+  const tickers = Array.from(new Set(all.map(tx=>tx.ticker))).sort();
+  const tickerSel = tickers.indexOf(state.studentFilterTicker) >= 0 ? state.studentFilterTicker : '';
+  const start = state.studentFilterStart, end = state.studentFilterEnd, big = !!state.studentFilterBig;
+  const flags = computePriceChangeFlags(all);
+  const inRange = filterTransactions(all, tickerSel, start, end);
+  const shown = big ? inRange.filter(tx=>bigMove(flags, tx)) : inRange;
+  const active = !!(tickerSel || start || end || big);
+  const bigTotal = all.filter(tx=>bigMove(flags, tx)).length;
+  const entries = n => n + ' entr' + (n === 1 ? 'y' : 'ies');
+  const tickerOptions = '<option value="">All stocks</option>' +
+    tickers.map(t=>'<option value="' + esc(t) + '"' + (t === tickerSel ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
+
+  let summary = '';
+  if(tickerSel && inRange.length){
+    const priced = inRange.filter(tx=>tx.price != null).sort((a,b)=> a.date !== b.date ? (a.date < b.date ? -1 : 1) : ((a.createdAt||0) - (b.createdAt||0)));
+    if(priced.length){
+      const prices = priced.map(tx=>tx.price);
+      const held = sd.holdings[tickerSel] ? sd.holdings[tickerSel].shares : 0;
+      summary = '<div class="filter-summary"><strong>' + esc(tickerSel) + '</strong>: ' + entries(inRange.length) +
+        ' &middot; lowest price ' + money(Math.min.apply(null, prices)) +
+        ' &middot; highest price ' + money(Math.max.apply(null, prices)) +
+        ' &middot; latest price ' + money(prices[prices.length - 1]) +
+        ' &middot; ' + held + ' ' + shareWord(held) + ' held now</div>';
+    }
+  }
+  const dateProblem = (start && end && start > end)
+    ? '<div class="error-inline">The From date is after the To date, so nothing can match. Change one of them.</div>' : '';
+  const explain = 'Change shows how far a price moved from the last price logged for that stock, even if that earlier entry is outside your filter. Rows highlighted in pink moved ' +
+    ANOMALY_THRESHOLD_PCT + '% or more, which is worth a second look but not necessarily wrong. ' +
+    (canEdit ? 'If one is a typo, fix it here.' : 'If one is a typo, ask your teacher to fix it in the Student Records tab.');
+
+  const filterBar = (
+    '<div class="card dashed" role="group" aria-label="Filter your activity" style="margin:14px 0;">' +
+      '<div class="grid grid-3">' +
+        '<div><label for="stuFilterTicker">Stock</label><select id="stuFilterTicker" onchange="updateStudentFilter(&#39;ticker&#39;, this.value)">' + tickerOptions + '</select></div>' +
+        '<div><label for="stuFilterStart">From date</label><input type="date" id="stuFilterStart" value="' + esc(start) + '" onchange="updateStudentFilter(&#39;start&#39;, this.value)"></div>' +
+        '<div><label for="stuFilterEnd">To date</label><input type="date" id="stuFilterEnd" value="' + esc(end) + '" onchange="updateStudentFilter(&#39;end&#39;, this.value)"></div>' +
+      '</div>' +
+      '<label style="display:flex;align-items:center;gap:10px;margin-top:14px;cursor:pointer;color:var(--ink);">' +
+        '<input type="checkbox" id="stuFilterBig"' + (big ? ' checked' : '') + ' onchange="updateStudentFilter(&#39;big&#39;, this.checked)">' +
+        '<span>Only show big price moves (' + ANOMALY_THRESHOLD_PCT + '% or more)' +
+        (bigTotal ? ' <span class="muted">' + bigTotal + ' in your log</span>' : '') + '</span>' +
+      '</label>' +
+      (active ? '<button type="button" class="btn ghost small" style="margin-top:12px;" onclick="clearStudentFilter()">Clear filters</button>' : '') +
+      dateProblem + summary +
+      '<div class="small-note" style="margin-top:10px;">' + explain + '</div>' +
+    '</div>'
+  );
+  const table = shown.length
+    ? '<div style="overflow-x:auto;">' + buildHistoryTable(sd, 'student', canEdit, shown) + '</div>'
+    : '<div class="empty-note">' + (all.length ? 'Nothing matches these filters.' : 'No activity yet.') + '</div>';
   return (
     '<div class="card">' +
       '<div class="flex-between"><h3>Your full activity log</h3>' +
-      '<span class="muted">'+sd.transactions.length+' entr'+(sd.transactions.length===1?'y':'ies')+'</span></div>' +
+      '<span class="muted">' + (active ? 'Showing ' + shown.length + ' of ' + entries(all.length) : entries(all.length)) + '</span></div>' +
       (canEdit
-        ? '<div class="small-note">You can fix mistakes here — editing or deleting an entry recalculates your cash, holdings, and charts automatically.</div>'
-        : '<div class="small-note">This is a read-only record. If you spot a mistake, ask your teacher to fix it in the Student Records tab.</div>') +
-      '<div style="overflow-x:auto;margin-top:10px;">' + buildHistoryTable(sd, 'student', canEdit) + '</div>' +
+        ? '<div class="small-note">You can fix mistakes here. Editing or deleting an entry recalculates your cash, holdings, and charts automatically.</div>'
+        : '<div class="small-note">This is a read-only record.</div>') +
+      filterBar + table +
     '</div>'
   );
 }
